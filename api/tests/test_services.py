@@ -33,7 +33,7 @@ def test_model_adapter_uses_configured_token_and_model(monkeypatch):
     assert observed["url"] == "https://router.huggingface.co/v1/chat/completions"
     assert observed["headers"]["Authorization"] == "Bearer test-hf-token"
     assert observed["body"]["model"] == "test/model"
-    assert observed["body"]["messages"][1]["content"] == "locks?"
+    assert observed["body"]["messages"][-1]["content"] == "locks?"
 
 
 def test_database_adapter_sets_read_only_transaction_and_timeout(monkeypatch):

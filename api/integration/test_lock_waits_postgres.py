@@ -143,7 +143,7 @@ def test_api_scopes_lock_waits_to_connected_database(monkeypatch) -> None:
             monkeypatch.setenv(
                 "DIAGNOSTICS_AUTH_SECRET", "integration-secret-with-at-least-32-characters"
             )
-            monkeypatch.setattr(main, "generate_candidate_sql", lambda question: SAFE_SQL)
+            monkeypatch.setattr(main, "generate_method_sql", lambda *args: SAFE_SQL)
             client = TestClient(main.app)
 
             _assert_lock_scenario(admin_url, target_db, client, expected_visible=True)

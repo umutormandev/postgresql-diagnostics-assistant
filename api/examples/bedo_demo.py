@@ -14,6 +14,7 @@ from app.catalog import CATALOG
 def run() -> None:
     secret = "local-demo-secret-with-at-least-32-characters"
     os.environ["DIAGNOSTICS_AUTH_SECRET"] = secret
+    os.environ["DIAGNOSTICS_DEMO_MODE"] = "1"
     now = int(time.time())
     token = jwt.encode(
         {
@@ -25,7 +26,6 @@ def run() -> None:
     )
     headers = {"Authorization": f"Bearer {token}"}
 
-    main.generate_candidate_sql = lambda question: CATALOG["lock_waits"].safe_sql
     main.generate_method_sql = (
         lambda question, method, schema, metric=None: schema.safe_sql
     )

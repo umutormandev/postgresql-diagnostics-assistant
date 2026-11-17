@@ -30,22 +30,29 @@ uses its own canonical SQL after validation.
 | --- | --- | --- | --- |
 | `b2` | Fixed catalog of all operator views | None (zero-shot) | Selected view only |
 | `b3` | Same fixed catalog | Three question/SQL examples (few-shot) | Selected view only |
-| `a1` | Same fixed catalog | None; proposed-style prompt without dynamic schema selection | Selected view only |
-| `proposed` | Only the question-selected view | None | Selected view only |
+| `a1` | Same fixed catalog | Same three development examples as proposed | Selected view only |
+| `proposed` | Only the question-selected view | Same three development examples as A1 | Selected view only |
 
 All online methods use `HF_TOKEN`, `HF_MODEL`, a 15-second HTTP timeout,
-`temperature=0`, and `max_tokens=128`. The lock view is live PostgreSQL. The
+`temperature=0`, and `max_tokens=128`. Proposed and A1 use the same prompt
+builder for every intent, including locks; only the schema context changes.
+The lock view is live PostgreSQL. The
 `diagnostics.long_queries(pid, duration_seconds, query_text)` and
 `diagnostics.query_stats(queryid, total_exec_time_ms, mean_exec_time_ms, calls)`
-catalog entries are **provisional**: the model SQL is validated, then the API
-returns controlled fixture rows with `source: "controlled_fixture"`. No
-PostgreSQL query is made for these two intents until Yusuf's view and permission
-contracts are agreed.
+catalog entries are **provisional**. In normal API mode, after any needed metric
+clarification, either intent returns HTTP 503 with
+`{"status":"unavailable","intent":"long_queries","rows":[],"source":"unavailable","detail":"Live diagnostic view is not available"}`
+(`intent` is `query_stats` for statistics). No model or PostgreSQL call occurs.
+Controlled fixture rows with `source: "controlled_fixture"` are available only
+when the server explicitly sets `DIAGNOSTICS_DEMO_MODE=1`, as the Bedo demo
+does. This mode is for development demonstrations, not production data.
 
 `{"question":"En pahalı sorgu hangisi?"}` first returns
 `{"status":"clarification_required","intent":"query_stats","rows":[],"source":"schema_catalog","clarification":{"question":"Toplam çalışma süresi mi, çağrı başına ortalama süre mi?","options":["total","mean"]}}`.
-Repeat the request with `"metric":"total"` or `"metric":"mean"`. The
-controlled fixture ranks different query IDs for those two metrics.
+Repeat the request with `"metric":"total"` or `"metric":"mean"`. Questions
+that explicitly say “toplam süre” or “çağrı başına ortalama” use that metric
+without a follow-up. A conflicting `metric` field returns HTTP 422. In demo
+mode, the controlled fixture ranks different query IDs for the two metrics.
 
 ## Setup (PowerShell, Python 3.11+)
 
@@ -98,6 +105,11 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8000/diagnose' -Method Post -Headers $h
 $body = @{ question = 'En pahalı sorgu hangisi?'; metric = 'mean'; method = 'proposed' } | ConvertTo-Json
 Invoke-RestMethod -Uri 'http://127.0.0.1:8000/diagnose' -Method Post -Headers $headers -ContentType 'application/json' -Body $body
 ```
+
+The ambiguous cost request above first returns the clarification in any mode.
+After a metric is chosen, normal mode returns the documented HTTP 503 until
+Yusuf's statistics view is ready. Run the controlled demo command below to see
+metric results now.
 
 For an immediately runnable example without HF or PostgreSQL credentials, use
 `python -m examples.bedo_demo`. It sends the same requests through FastAPI's
@@ -155,11 +167,12 @@ cd api
 python -m pytest -q
 ```
 
-The 31 controlled tests cover the original 12 authentication, lock, SQL guard,
+The controlled tests cover the original authentication, lock, SQL guard,
 and adapter checks plus Turkish intent/role selection, B2/B3/A1/proposed
-prompts and API calls, cost clarification and metric ranking, provisional rows,
-and A2 replay. They do not contact Hugging Face or PostgreSQL. Live Hugging Face
-inference remains untested when no token/model is configured.
+prompts and API calls, cost clarification and metric ranking, demo-only rows,
+normal-mode unavailability, and A2 replay. They do not contact Hugging Face or
+PostgreSQL. Live Hugging Face inference remains untested when no token/model is
+configured.
 
 The two-database PostgreSQL regression test is separate from the controlled
 tests. Run it against an isolated PostgreSQL 14+ instance with a role that can

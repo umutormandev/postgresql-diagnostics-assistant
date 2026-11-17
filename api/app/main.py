@@ -1,13 +1,18 @@
 """Lock diagnostics HTTP API."""
 
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+import os
 from typing import Literal
 
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.responses import JSONResponse
+
 from .auth import require_operator
-from .catalog import FIXTURE_ROWS, needs_cost_clarification, select_schema
+from .catalog import (
+    FIXTURE_ROWS, needs_cost_clarification, resolve_cost_metric, select_schema,
+)
 from .services import (
-    ServiceUnavailable, fetch_lock_waits, generate_candidate_sql, generate_method_sql,
+    ServiceUnavailable, fetch_lock_waits, generate_method_sql,
 )
 from .sql_guard import UnsafeSQL, validate_candidate_sql
 
@@ -32,14 +37,15 @@ app = FastAPI(title="PostgreSQL Diagnostics Assistant")
 
 
 @app.post("/diagnose", response_model=DiagnoseResponse, response_model_exclude_none=True)
-def diagnose(payload: DiagnoseRequest, request: Request) -> DiagnoseResponse:
+def diagnose(payload: DiagnoseRequest, request: Request) -> DiagnoseResponse | JSONResponse:
     role = require_operator(request)
     try:
         schema = select_schema(payload.question, role)
+        metric = resolve_cost_metric(payload.question, schema, payload.metric)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    if needs_cost_clarification(payload.question, schema, payload.metric):
+    if needs_cost_clarification(payload.question, schema, metric):
         return DiagnoseResponse(
             status="clarification_required", intent="query_stats", rows=[],
             source="schema_catalog",
@@ -49,21 +55,23 @@ def diagnose(payload: DiagnoseRequest, request: Request) -> DiagnoseResponse:
             },
         )
 
+    if not schema.live and os.getenv("DIAGNOSTICS_DEMO_MODE") != "1":
+        return JSONResponse(status_code=503, content={
+            "status": "unavailable", "intent": schema.intent, "rows": [],
+            "source": "unavailable",
+            "detail": "Live diagnostic view is not available",
+        })
+
     try:
-        if payload.method == "proposed" and schema.intent == "lock_waits":
-            candidate = generate_candidate_sql(payload.question)
-        else:
-            candidate = generate_method_sql(
-                payload.question, payload.method, schema, payload.metric
-            )
+        candidate = generate_method_sql(payload.question, payload.method, schema, metric)
         sql = validate_candidate_sql(candidate, schema)
         if schema.live:
             rows = fetch_lock_waits(sql)
         else:
             rows = [dict(row) for row in FIXTURE_ROWS[schema.intent]]
-            if schema.intent == "query_stats" and payload.metric:
+            if schema.intent == "query_stats" and metric:
                 column = (
-                    "total_exec_time_ms" if payload.metric == "total"
+                    "total_exec_time_ms" if metric == "total"
                     else "mean_exec_time_ms"
                 )
                 rows = [max(rows, key=lambda row: row[column])]

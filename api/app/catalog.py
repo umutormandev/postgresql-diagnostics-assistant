@@ -60,7 +60,10 @@ def select_schema(question: str, role: str) -> Schema:
     if role != "operator":
         raise PermissionError("forbidden")
     words = _normalize(question)
-    if any(term in words for term in ("pahali", "istatistik", "statistics", "total", "ortalama", "mean")):
+    if any(term in words for term in (
+        "pahali", "istatistik", "statistics", "toplam", "total",
+        "ortalama", "cagri basina", "mean", "average",
+    )):
         intent = "query_stats"
     elif any(term in words for term in ("uzun", "yavas", "long", "slow")):
         intent = "long_queries"
@@ -76,6 +79,21 @@ def select_schema(question: str, role: str) -> Schema:
 
 def visible_schemas(role: str) -> tuple[Schema, ...]:
     return tuple(schema for schema in CATALOG.values() if role in schema.roles)
+
+
+def resolve_cost_metric(question: str, schema: Schema, metric: str | None) -> str | None:
+    """Use an explicit metric in the question, or a matching request field."""
+    if schema.intent != "query_stats":
+        return metric
+    words = _normalize(question)
+    mentions_total = "toplam" in words or "total" in words
+    mentions_mean = any(term in words for term in (
+        "ortalama", "cagri basina", "mean", "average", "per call",
+    ))
+    inferred = ("total" if mentions_total else "mean") if mentions_total != mentions_mean else None
+    if metric and inferred and metric != inferred:
+        raise ValueError("Cost metric conflicts with the question")
+    return metric or inferred
 
 
 def needs_cost_clarification(question: str, schema: Schema, metric: str | None) -> bool:

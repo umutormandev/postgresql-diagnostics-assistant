@@ -35,7 +35,7 @@ def bearer(role, secret=SECRET):
 
 
 def test_operator_gets_lock_waits(monkeypatch):
-    monkeypatch.setattr(main, "generate_candidate_sql", lambda question: SAFE_SQL)
+    monkeypatch.setattr(main, "generate_method_sql", lambda *args: SAFE_SQL)
     observed = []
 
     def fake_fetch(sql):
@@ -62,7 +62,7 @@ def test_viewer_is_forbidden_before_model_or_database(monkeypatch):
     def fail(*args):
         pytest.fail("Viewer must not call model or database")
 
-    monkeypatch.setattr(main, "generate_candidate_sql", fail)
+    monkeypatch.setattr(main, "generate_method_sql", fail)
     monkeypatch.setattr(main, "fetch_lock_waits", fail)
     response = client.post(
         "/diagnose", json={"question": "locks"}, headers=bearer("viewer")
@@ -72,7 +72,7 @@ def test_viewer_is_forbidden_before_model_or_database(monkeypatch):
 
 
 def test_empty_lock_waits_return_empty_rows(monkeypatch):
-    monkeypatch.setattr(main, "generate_candidate_sql", lambda question: SAFE_SQL)
+    monkeypatch.setattr(main, "generate_method_sql", lambda *args: SAFE_SQL)
     monkeypatch.setattr(main, "fetch_lock_waits", lambda sql: [])
     response = client.post(
         "/diagnose", json={"question": "locks"}, headers=bearer("operator")
@@ -91,7 +91,7 @@ def test_empty_lock_waits_return_empty_rows(monkeypatch):
     ],
 )
 def test_unsafe_model_sql_never_reaches_database(monkeypatch, candidate):
-    monkeypatch.setattr(main, "generate_candidate_sql", lambda question: candidate)
+    monkeypatch.setattr(main, "generate_method_sql", lambda *args: candidate)
 
     def fail(sql):
         pytest.fail("Unvalidated SQL reached PostgreSQL")
@@ -105,7 +105,7 @@ def test_unsafe_model_sql_never_reaches_database(monkeypatch, candidate):
 
 
 def test_untrusted_token_cannot_claim_operator(monkeypatch):
-    monkeypatch.setattr(main, "generate_candidate_sql", lambda question: pytest.fail("model called"))
+    monkeypatch.setattr(main, "generate_method_sql", lambda *args: pytest.fail("model called"))
     response = client.post(
         "/diagnose", json={"question": "locks"}, headers=bearer("operator", "different-secret-with-at-least-32-chars")
     )

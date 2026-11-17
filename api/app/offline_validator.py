@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .catalog import needs_cost_clarification, select_schema
+from .catalog import needs_cost_clarification, resolve_cost_metric, select_schema
 from .sql_guard import UnsafeSQL, validate_candidate_sql
 
 
@@ -33,8 +33,11 @@ def validate_record(record: dict) -> dict:
             raise ValueError("Unknown metric")
         schema = select_schema(question, role)
         result["intent"] = schema.intent
+        metric = resolve_cost_metric(question, schema, metric)
         if needs_cost_clarification(question, schema, metric):
             raise ValueError("Cost metric clarification required")
+        if metric:
+            result["metric"] = metric
         result["normalized_sql"] = validate_candidate_sql(candidate, schema)
         result["accepted"] = True
     except (KeyError, ValueError, PermissionError, UnsafeSQL) as exc:

@@ -16,6 +16,7 @@ client = TestClient(main.app)
 @pytest.fixture(autouse=True)
 def auth_secret(monkeypatch):
     monkeypatch.setenv("DIAGNOSTICS_AUTH_SECRET", "test-secret-with-at-least-thirty-two-characters")
+    monkeypatch.setenv("DIAGNOSTICS_DEMO_MODE", "1")
 
 
 @pytest.mark.parametrize(
@@ -63,6 +64,41 @@ def test_cost_metrics_choose_different_rows(monkeypatch, metric, expected_queryi
     assert response.status_code == 200
     assert response.json()["rows"][0]["queryid"] == expected_queryid
     assert response.json()["source"] == "controlled_fixture"
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_metric", "expected_queryid"),
+    [
+        ("Toplam çalışma süresine göre en pahalı sorgu hangisi?", "total", 901),
+        ("Çağrı başına ortalama süreye göre en pahalı sorgu hangisi?", "mean", 902),
+    ],
+)
+def test_explicit_question_metric_needs_no_followup(
+    monkeypatch, question, expected_metric, expected_queryid
+):
+    seen = []
+
+    def candidate(prompt, method, schema, metric):
+        seen.append(metric)
+        return CATALOG["query_stats"].safe_sql
+
+    monkeypatch.setattr(main, "generate_method_sql", candidate)
+    response = client.post(
+        "/diagnose", json={"question": question}, headers=bearer("operator")
+    )
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["queryid"] == expected_queryid
+    assert seen == [expected_metric]
+
+
+def test_conflicting_cost_metric_is_rejected(monkeypatch):
+    monkeypatch.setattr(main, "generate_method_sql", lambda *args: pytest.fail("model called"))
+    response = client.post(
+        "/diagnose",
+        json={"question": "Toplam süreye göre en pahalı sorgu?", "metric": "mean"},
+        headers=bearer("operator"),
+    )
+    assert response.status_code == 422
 
 
 def test_long_queries_use_controlled_rows(monkeypatch):
@@ -121,8 +157,22 @@ def test_methods_share_hf_settings_and_expected_schema_context(monkeypatch, meth
     assert "diagnostics.lock_waits" in system
     assert ("diagnostics.long_queries" in system) is (method != "proposed")
     assert sum(message["role"] == "assistant" for message in request["messages"]) == (
-        3 if method == "b3" else 0
+        0 if method == "b2" else 3
     )
+
+
+@pytest.mark.parametrize("intent", ["lock_waits", "long_queries", "query_stats"])
+def test_proposed_and_a1_change_only_schema_context(intent):
+    selected = CATALOG[intent]
+    question = "Hangi oturum hangisini engelliyor?"
+    proposed = services.build_messages(question, "proposed", selected)
+    a1 = services.build_messages(question, "a1", selected)
+    fixed_context = "; ".join(schema.describe() for schema in visible_schemas("operator"))
+    assert proposed[0]["content"].replace(selected.describe(), "{schema}") == (
+        a1[0]["content"].replace(fixed_context, "{schema}")
+    )
+    assert proposed[1:] == a1[1:]
+    assert sum(message["role"] == "assistant" for message in proposed) == 3
 
 
 @pytest.mark.parametrize("method", ["b2", "b3", "a1", "proposed"])
@@ -136,6 +186,58 @@ def test_all_methods_are_callable_through_api(monkeypatch, method):
     )
     assert response.status_code == 200
     assert response.json()["intent"] == "long_queries"
+
+
+@pytest.mark.parametrize("method", ["b2", "b3", "a1", "proposed"])
+def test_all_methods_keep_existing_lock_response_contract(monkeypatch, method):
+    monkeypatch.delenv("DIAGNOSTICS_DEMO_MODE")
+    monkeypatch.setattr(
+        main, "generate_method_sql", lambda *args: CATALOG["lock_waits"].safe_sql
+    )
+    monkeypatch.setattr(main, "fetch_lock_waits", lambda sql: [
+        {"waiting_pid": 7426, "blocking_pid": 7412, "wait_seconds": 18}
+    ])
+    response = client.post(
+        "/diagnose", json={"question": "Hangi oturum hangisini engelliyor?", "method": method},
+        headers=bearer("operator"),
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok", "intent": "lock_waits",
+        "rows": [{"waiting_pid": 7426, "blocking_pid": 7412, "wait_seconds": 18}],
+        "source": "pg_blocking_pids + pg_locks",
+    }
+
+
+@pytest.mark.parametrize("question,intent", [
+    ("Uzun süren sorgular?", "long_queries"),
+    ("Toplam süreye göre en pahalı sorgu hangisi?", "query_stats"),
+])
+def test_normal_api_reports_unavailable_without_model_or_database(
+    monkeypatch, question, intent
+):
+    monkeypatch.delenv("DIAGNOSTICS_DEMO_MODE")
+    monkeypatch.setattr(main, "generate_method_sql", lambda *args: pytest.fail("model called"))
+    monkeypatch.setattr(main, "fetch_lock_waits", lambda sql: pytest.fail("DB called"))
+    response = client.post(
+        "/diagnose", json={"question": question}, headers=bearer("operator")
+    )
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "unavailable", "intent": intent, "rows": [],
+        "source": "unavailable", "detail": "Live diagnostic view is not available",
+    }
+
+
+def test_ambiguous_cost_question_still_clarifies_in_normal_mode(monkeypatch):
+    monkeypatch.delenv("DIAGNOSTICS_DEMO_MODE")
+    monkeypatch.setattr(main, "generate_method_sql", lambda *args: pytest.fail("model called"))
+    response = client.post(
+        "/diagnose", json={"question": "En pahalı sorgu hangisi?"},
+        headers=bearer("operator"),
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "clarification_required"
 
 
 def test_selected_schema_rejects_other_view_before_fixture(monkeypatch):
@@ -166,6 +268,19 @@ def test_a2_denies_viewer_record():
         "question": "Kilit beklemeleri?", "sql": CATALOG["lock_waits"].safe_sql,
     })
     assert result["accepted"] is False
+
+
+@pytest.mark.parametrize(("phrase", "metric"), [
+    ("Toplam süreye göre en pahalı sorgu?", "total"),
+    ("Çağrı başına ortalama süreye göre en pahalı sorgu?", "mean"),
+])
+def test_a2_infers_explicit_cost_metric(phrase, metric):
+    result = validate_record({
+        "candidate_id": "cost", "method": "a1", "role": "operator",
+        "question": phrase, "sql": CATALOG["query_stats"].safe_sql,
+    })
+    assert result["accepted"] is True
+    assert result["metric"] == metric
 
 
 def test_a2_rejects_non_object_record():

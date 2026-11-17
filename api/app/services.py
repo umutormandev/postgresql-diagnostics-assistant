@@ -9,11 +9,10 @@ from psycopg.rows import dict_row
 from .catalog import CATALOG, Schema, visible_schemas
 
 
-SYSTEM_PROMPT = (
-    "Return only one PostgreSQL SELECT statement, with no markdown or explanation. "
-    "The only available relation is diagnostics.lock_waits, with columns "
-    "waiting_pid, blocking_pid, wait_seconds. Return all three columns. "
-    "Do not use any other relations, expressions, functions, filters or clauses."
+DEVELOPMENT_EXAMPLES = (
+    ("Hangi oturum hangisini engelliyor?", CATALOG["lock_waits"].safe_sql),
+    ("Uzun süren sorgular hangileri?", CATALOG["long_queries"].safe_sql),
+    ("Sorgu istatistiklerini göster", CATALOG["query_stats"].safe_sql),
 )
 
 
@@ -49,17 +48,16 @@ def _chat_completion(messages: list[dict[str, str]]) -> str:
 
 
 def generate_candidate_sql(question: str) -> str:
-    """Keep the original lock prompt and endpoint behavior."""
-    return _chat_completion([
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": question},
-    ])
+    """Backward-compatible lock helper using the proposed prompt builder."""
+    return generate_method_sql(question, "proposed", CATALOG["lock_waits"])
 
 
-def generate_method_sql(
+def build_messages(
     question: str, method: str, selected: Schema, metric: str | None = None
-) -> str:
-    """All methods share the same HF model, timeout, temperature and token limit."""
+) -> list[dict[str, str]]:
+    """A1 and proposed differ only in their schema context, for every intent."""
+    if method not in {"proposed", "a1", "b2", "b3"}:
+        raise ValueError("Unknown method")
     context_schemas = (selected,) if method == "proposed" else visible_schemas("operator")
     context = "; ".join(schema.describe() for schema in context_schemas)
     if method in {"b2", "b3"}:
@@ -74,23 +72,23 @@ def generate_method_sql(
             f"{context}. Return one SELECT of every column of the relevant view only; "
             "no joins, functions, filters, ordering or other clauses."
         )
-    else:
-        raise ValueError("Unknown method")
-
     messages = [{"role": "system", "content": system}]
-    if method == "b3":
-        for example_question, example_sql in (
-            ("Hangi oturum hangisini engelliyor?", CATALOG["lock_waits"].safe_sql),
-            ("Uzun süren sorgular hangileri?", CATALOG["long_queries"].safe_sql),
-            ("Sorgu istatistiklerini göster", CATALOG["query_stats"].safe_sql),
-        ):
+    if method in {"b3", "a1", "proposed"}:
+        for example_question, example_sql in DEVELOPMENT_EXAMPLES:
             messages.extend([
                 {"role": "user", "content": example_question},
                 {"role": "assistant", "content": example_sql},
             ])
     user_content = question if metric is None else f"{question}\nCost metric: {metric}"
     messages.append({"role": "user", "content": user_content})
-    return _chat_completion(messages)
+    return messages
+
+
+def generate_method_sql(
+    question: str, method: str, selected: Schema, metric: str | None = None
+) -> str:
+    """All methods share the same HF model, timeout, temperature and token limit."""
+    return _chat_completion(build_messages(question, method, selected, metric))
 
 
 def fetch_lock_waits(sql: str) -> list[dict]:
