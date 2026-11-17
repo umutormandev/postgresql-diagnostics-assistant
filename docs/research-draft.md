@@ -1,13 +1,45 @@
 # A Read-Only Natural-Language Assistant for PostgreSQL Diagnostics
 
+## Abstract
+
+This project develops a read-only assistant for PostgreSQL diagnostic questions
+in Turkish. The prototype routes requests to approved views and combines role
+checks with SQL validation and controlled execution. In a live lock pilot,
+four model prompt variants identified the same process pair while a lock was
+held and returned empty results after release. In a separate synthetic API
+verification, B1 matched 108 permitted results and rejected 36 requests marked
+outside its permissions. These preliminary observations establish feasibility.
+The complete live workload experiment will estimate differences in accuracy,
+blocking and latency across methods.
+
 ## Introduction
 
-PostgreSQL operators use database monitoring information to identify blocked
-sessions, active queries that exceed a duration threshold, and costly queries
-in a measurement window. The prototype accepts these requests in Turkish and
+PostgreSQL exposes dynamic and accumulated activity through monitoring views
+[1]. Operators use that information to identify blocked sessions, active queries
+that exceed a duration threshold, and costly queries in a measurement window. The prototype accepts these requests in Turkish and
 uses a restricted diagnostics schema. The study examines the effect of prompt
 examples and question-specific schema context on result accuracy and latency,
 and measures how the application validator handles unauthorized candidates.
+
+The study addresses three questions.
+
+1. How do verified SQL generation, templates, zero-shot prompting and few-shot
+   prompting differ in observed accuracy and latency?
+2. How does question-specific schema context affect execution accuracy when
+   examples and validation are held fixed?
+3. How often do the role policy and SQL validator block unauthorized requests
+   before execution, and how often do they block permitted requests?
+
+## Related Work
+
+Stratica et al. use semantic templates to map natural-language requests to
+database queries [2]. Our template baseline uses a fixed diagnostics catalog
+and extracts duration and ranking parameters. Gao et al. examine how prompt
+representation and example selection affect LLM text-to-SQL benchmarks [3].
+The proposed method tests a small, role-scoped form of schema selection,
+motivated by work on finding relevant schema elements for a question [4].
+We score returned rows against independently established results, following
+the distinction between SQL wording and query semantics in Zhong et al. [5].
 
 ## Methods
 
@@ -20,8 +52,10 @@ its own read-only projection. A2 replays the same labeled SQL candidates
 through the validator and records its authorization decisions offline.
 
 The benchmark uses equal questions, credentials and data for every method in
-each condition. The frozen question set contains 48 cases, distributed over
-two data distributions and two workloads, with three repetitions per method.
+each condition. The 48 prepared question cases are assigned to the four planned
+combinations of data distribution and workload. The live run will pair these
+conditions with verified PostgreSQL snapshots and run three repetitions per
+method.
 Accuracy is measured against reference results obtained independently. The
 run also records clarification success, authorization outcomes, end-to-end
 latency and database call time. The planned primary comparison uses per-case
@@ -54,6 +88,28 @@ can execute the same diagnosis end to end. The broader experiment will test
 whether this behavior holds across Turkish phrasing, privileges, query
 duration and aggregate statistics. Controlled demonstrations and live
 measurements will be reported with their corresponding data sources.
+
+## References
+
+[1] PostgreSQL Global Development Group, “The cumulative statistics system,”
+PostgreSQL 17 Documentation. <https://www.postgresql.org/docs/17/monitoring-stats.html>
+
+[2] N. Stratica, L. Kosseim, and B. C. Desai, “Using semantic templates for a
+natural language interface to databases,” Data & Knowledge Engineering,
+vol. 55, pp. 4–19, 2005. <https://doi.org/10.1016/j.datak.2004.12.002>
+
+[3] D. Gao et al., “Text-to-SQL empowered by large language models: A benchmark
+evaluation,” Proc. VLDB Endowment, vol. 17, no. 5, 2024.
+<https://doi.org/10.14778/3641204.3641221>
+
+[4] M. M. H. Nahid, D. Rafiei, W. Zhang, and Y. Zhang, “Rethinking schema
+linking: A context-aware bidirectional retrieval approach for Text-to-SQL,”
+in Findings of EACL, 2026, pp. 4516–4546.
+<https://doi.org/10.18653/v1/2026.findings-eacl.236>
+
+[5] R. Zhong, T. Yu, and D. Klein, “Semantic evaluation for Text-to-SQL with
+distilled test suites,” in Proc. EMNLP, 2020.
+<https://aclanthology.org/2020.emnlp-main.29/>
 
 ## Demo Akışı
 
