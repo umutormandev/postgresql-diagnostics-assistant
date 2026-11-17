@@ -29,9 +29,12 @@ def auth_secret(monkeypatch):
 )
 def test_turkish_question_selects_schema(question, intent):
     assert select_schema(question, "operator").intent == intent
-    assert visible_schemas("viewer") == ()
-    with pytest.raises(PermissionError):
-        select_schema(question, "viewer")
+    assert visible_schemas("viewer") == (CATALOG["query_stats"],)
+    if intent == "query_stats":
+        assert select_schema(question, "viewer").intent == intent
+    else:
+        with pytest.raises(PermissionError):
+            select_schema(question, "viewer")
 
 
 def test_cost_question_requests_metric_before_model(monkeypatch):
@@ -288,3 +291,31 @@ def test_a2_rejects_non_object_record():
         "candidate_id": None, "accepted": False,
         "reason": "Candidate record must be a JSON object",
     }
+
+
+def test_b1_filters_active_queries_without_calling_a_model(monkeypatch):
+    monkeypatch.setattr(main, "generate_method_sql", lambda *args: pytest.fail("model called"))
+    response = client.post(
+        "/diagnose", json={"question": "25 saniyeyi aşan aktif sorguları göster.", "method": "b1"},
+        headers=bearer("operator"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["threshold_seconds"] == 25
+    assert [row["pid"] for row in body["rows"]] == [7312]
+
+
+def test_viewer_only_exposes_statistics_in_model_messages(monkeypatch):
+    captured = []
+    monkeypatch.setattr(services, "_chat_completion", lambda messages: captured.extend(messages)
+                        or CATALOG["query_stats"].safe_sql)
+    response = client.post(
+        "/diagnose", json={"question": "Son 15 dakikada toplam süreye göre ilk 2 sorguyu göster.",
+                          "method": "b3"},
+        headers=bearer("viewer"),
+    )
+    assert response.status_code == 200
+    assert [row["queryid"] for row in response.json()["rows"]] == [901, 902]
+    assert "diagnostics.query_stats" in json.dumps(captured)
+    assert "diagnostics.lock_waits" not in json.dumps(captured)
+    assert "diagnostics.long_queries" not in json.dumps(captured)

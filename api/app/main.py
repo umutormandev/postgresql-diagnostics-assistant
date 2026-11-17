@@ -1,18 +1,19 @@
-"""Lock diagnostics HTTP API."""
+"""Read-only PostgreSQL diagnostics HTTP API."""
 
 import os
+from time import perf_counter
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
-from .auth import require_operator
+from .auth import require_role
 from .catalog import (
-    FIXTURE_ROWS, needs_cost_clarification, resolve_cost_metric, select_schema,
+    FIXTURE_ROWS, needs_cost_clarification, requested_limits, resolve_cost_metric, select_schema,
 )
 from .services import (
-    ServiceUnavailable, fetch_lock_waits, generate_method_sql,
+    DatabasePermissionDenied, ServiceUnavailable, fetch_lock_waits, generate_method_sql,
 )
 from .sql_guard import UnsafeSQL, validate_candidate_sql
 
@@ -21,27 +22,33 @@ class DiagnoseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question: str = Field(min_length=1, max_length=1000)
-    method: Literal["proposed", "b2", "b3", "a1"] = "proposed"
+    method: Literal["proposed", "b1", "b2", "b3", "a1"] = "proposed"
     metric: Literal["total", "mean"] | None = None
 
 
 class DiagnoseResponse(BaseModel):
     status: str = "ok"
     intent: str = "lock_waits"
-    rows: list[dict[str, int | str]]
+    rows: list[dict[str, int | float | str | None]]
     source: str = "pg_blocking_pids + pg_locks"
     clarification: dict[str, object] | None = None
+    threshold_seconds: int | None = None
+    window_minutes: int | None = None
 
 
 app = FastAPI(title="PostgreSQL Diagnostics Assistant")
 
 
 @app.post("/diagnose", response_model=DiagnoseResponse, response_model_exclude_none=True)
-def diagnose(payload: DiagnoseRequest, request: Request) -> DiagnoseResponse | JSONResponse:
-    role = require_operator(request)
+def diagnose(
+    payload: DiagnoseRequest, request: Request, response: Response
+) -> DiagnoseResponse | JSONResponse:
+    role = require_role(request)
     try:
         schema = select_schema(payload.question, role)
         metric = resolve_cost_metric(payload.question, schema, payload.metric)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="forbidden") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -55,29 +62,60 @@ def diagnose(payload: DiagnoseRequest, request: Request) -> DiagnoseResponse | J
             },
         )
 
-    if not schema.live and os.getenv("DIAGNOSTICS_DEMO_MODE") != "1":
+    fixtures = getattr(request.app.state, "controlled_fixture", None)
+    if not schema.live and fixtures is None and os.getenv("DIAGNOSTICS_DEMO_MODE") != "1":
         return JSONResponse(status_code=503, content={
             "status": "unavailable", "intent": schema.intent, "rows": [],
             "source": "unavailable",
             "detail": "Live diagnostic view is not available",
         })
 
+    threshold, window, count = requested_limits(payload.question, schema)
+    if window not in (None, 15) and not schema.live:
+        return DiagnoseResponse(
+            status="insufficient_data", intent=schema.intent, rows=[], source="controlled_fixture",
+            window_minutes=window,
+        )
+
     try:
-        candidate = generate_method_sql(payload.question, payload.method, schema, metric)
-        sql = validate_candidate_sql(candidate, schema)
-        if schema.live:
-            rows = fetch_lock_waits(sql)
+        if payload.method == "b1":
+            candidate = schema.safe_sql
         else:
-            rows = [dict(row) for row in FIXTURE_ROWS[schema.intent]]
-            if schema.intent == "query_stats" and metric:
-                column = (
-                    "total_exec_time_ms" if metric == "total"
-                    else "mean_exec_time_ms"
-                )
-                rows = [max(rows, key=lambda row: row[column])]
+            options = {"role": role} if role != "operator" else {}
+            candidate = generate_method_sql(payload.question, payload.method, schema, metric, **options)
+        sql = validate_candidate_sql(candidate, schema)
     except UnsafeSQL as exc:
         raise HTTPException(status_code=502, detail="Model SQL is not allowed") from exc
     except ServiceUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=503, detail=str(exc), headers={"X-Diagnostics-Stage": "model"}
+        ) from exc
 
-    return DiagnoseResponse(intent=schema.intent, rows=rows, source=schema.source)
+    source = schema.source
+    if schema.live and fixtures is None:
+        started = perf_counter()
+        try:
+            rows = fetch_lock_waits(sql)
+        except DatabasePermissionDenied as exc:
+            raise HTTPException(
+                status_code=403, detail="forbidden",
+                headers={"X-Diagnostics-Stage": "database_denied"},
+            ) from exc
+        except ServiceUnavailable as exc:
+            raise HTTPException(
+                status_code=503, detail=str(exc), headers={"X-Diagnostics-Stage": "database"}
+            ) from exc
+        response.headers["Server-Timing"] = f"db;dur={(perf_counter() - started) * 1000:.3f}"
+    else:
+        rows = [dict(row) for row in (fixtures if fixtures is not None else FIXTURE_ROWS)[schema.intent]]
+        source = "controlled_fixture"
+    if threshold is not None:
+        rows = [row for row in rows if row["duration_seconds"] > threshold]
+    if schema.intent == "query_stats" and metric:
+        column = "total_exec_time_ms" if metric == "total" else "mean_exec_time_ms"
+        rows = sorted(rows, key=lambda row: (-row[column], row["queryid"]))[:count]
+
+    return DiagnoseResponse(
+        intent=schema.intent, rows=rows, source=source, threshold_seconds=threshold,
+        window_minutes=(window or 15) if schema.intent == "query_stats" and not schema.live else window,
+    )

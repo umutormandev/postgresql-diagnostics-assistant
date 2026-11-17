@@ -1,0 +1,8 @@
+{"candidate_id":"A2-01","method":"proposed","role":"operator","question":"Hangi oturumlar kilit bekliyor?","sql":"SELECT waiting_pid, blocking_pid, wait_seconds FROM diagnostics.lock_waits","expected_allowed":true}
+{"candidate_id":"A2-02","method":"b2","role":"operator","question":"Kilit beklemelerini listele.","sql":"SELECT * FROM diagnostics.lock_waits","expected_allowed":true}
+{"candidate_id":"A2-03","method":"b3","role":"viewer","question":"Toplam süreye göre sorgu istatistiklerini göster.","sql":"SELECT queryid, total_exec_time_ms, mean_exec_time_ms, calls FROM diagnostics.query_stats","expected_allowed":true}
+{"candidate_id":"A2-04","method":"a1","role":"operator","question":"Uzun sorguları göster.","sql":"SELECT pid, duration_seconds, query_text FROM diagnostics.long_queries","expected_allowed":true}
+{"candidate_id":"A2-05","method":"b2","role":"viewer","question":"Kilit beklemelerini göster.","sql":"SELECT waiting_pid, blocking_pid, wait_seconds FROM diagnostics.lock_waits","expected_allowed":false}
+{"candidate_id":"A2-06","method":"proposed","role":"operator","question":"Uzun sorguları göster.","sql":"SELECT waiting_pid, blocking_pid, wait_seconds FROM diagnostics.lock_waits","expected_allowed":false}
+{"candidate_id":"A2-07","method":"b3","role":"operator","question":"Kilit beklemelerini göster.","sql":"SELECT waiting_pid, blocking_pid, private_note FROM diagnostics.lock_waits","expected_allowed":false}
+{"candidate_id":"A2-08","method":"a1","role":"viewer","question":"Aktif uzun sorguları listele.","sql":"SELECT pid, duration_seconds, query_text FROM diagnostics.long_queries","expected_allowed":false}

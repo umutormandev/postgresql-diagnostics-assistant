@@ -6,7 +6,7 @@ import jwt
 from fastapi import HTTPException, Request
 
 
-def require_operator(request: Request) -> str:
+def require_role(request: Request) -> str:
     authorization = request.headers.get("authorization", "")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -28,6 +28,7 @@ def require_operator(request: Request) -> str:
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
 
-    if claims.get("role") != "operator":
+    role = claims.get("role")
+    if role not in ("operator", "viewer"):
         raise HTTPException(status_code=403, detail="forbidden")
-    return "operator"
+    return role

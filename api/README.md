@@ -1,11 +1,11 @@
 # Lock diagnostics API
 
 `POST /diagnose` accepts `{"question":"Hangi oturum hangisini engelliyor?"}`. A valid,
-server-signed operator bearer token is required. A signed viewer token returns HTTP 403
-before any Hugging Face or PostgreSQL call. The role is read only from the verified JWT,
-never from the request body or an untrusted role header.
+server-signed operator bearer token is required. Viewer requests for lock or active-session details return HTTP 403.
+Both roles can request query statistics. The API derives the role from the
+verified JWT before making model or database calls.
 
-Optional request fields are `method` (`proposed`, `b2`, `b3`, or `a1`; default
+Optional request fields are `method` (`proposed`, `b1`, `b2`, `b3`, or `a1`; default
 `proposed`) and `metric` (`total` or `mean` for expensive-query questions).
 
 The response contract is:
@@ -20,7 +20,8 @@ failures return an HTTP error; no partial data is returned.
 ## Schema catalog and methods
 
 The catalog in `app/catalog.py` assigns every view its columns, source, and
-permitted role. Only `operator` can see any diagnostic schema. Turkish question
+permitted role. The operator can see all three schemas. The viewer sees the
+statistics schema. Turkish question
 terms select `lock_waits`, `long_queries`, or `query_stats`; an unsupported
 question returns HTTP 422. SQLGlot validates one `SELECT` over the selected
 view. Explicit catalog columns are accepted; a lone `SELECT *` over exactly
@@ -30,12 +31,13 @@ or expressions are rejected. The raw model SQL is never sent to PostgreSQL.
 
 | Method | Prompt schema | Examples | Execution |
 | --- | --- | --- | --- |
-| `b2` | Fixed catalog of all operator views | None (zero-shot) | Selected view only |
+| `b1` | Predefined SQL for the selected view | None | Selected view only |
+| `b2` | Fixed catalog of role-permitted views | None (zero-shot) | Selected view only |
 | `b3` | Same fixed catalog | Three question/SQL examples (few-shot) | Selected view only |
 | `a1` | Same fixed catalog | Same three development examples as proposed | Selected view only |
 | `proposed` | Only the question-selected view | Same three development examples as A1 | Selected view only |
 
-All online methods use the same selected provider and generation settings.
+All model-based methods use the same selected provider and generation settings.
 Hugging Face is the default (`HF_TOKEN`, `HF_MODEL`, 15-second HTTP timeout,
 `temperature=0`, `max_tokens=128`). Set
 `DIAGNOSTICS_MODEL_PROVIDER=ollama` to use local Ollama instead; the defaults
@@ -51,9 +53,12 @@ catalog entries are **provisional**. In normal API mode, after any needed metric
 clarification, either intent returns HTTP 503 with
 `{"status":"unavailable","intent":"long_queries","rows":[],"source":"unavailable","detail":"Live diagnostic view is not available"}`
 (`intent` is `query_stats` for statistics). No model or PostgreSQL call occurs.
-Controlled fixture rows with `source: "controlled_fixture"` are available only
-when the server explicitly sets `DIAGNOSTICS_DEMO_MODE=1`, as the Bedo demo
-does. This mode is for development demonstrations, not production data.
+Controlled fixture rows carry `source: "controlled_fixture"`. They are available
+through the [local B1 demo](../evaluation/README.md) or by setting
+`DIAGNOSTICS_DEMO_MODE=1` for the two provisional views. In demo mode the
+statistical rows represent a 15-minute window. Queries that name a different
+window return `status: "insufficient_data"`. Live lock requests include database
+call time in the `Server-Timing` response header.
 
 `{"question":"En pahalı sorgu hangisi?"}` first returns
 `{"status":"clarification_required","intent":"query_stats","rows":[],"source":"schema_catalog","clarification":{"question":"Toplam çalışma süresi mi, çağrı başına ortalama süre mi?","options":["total","mean"]}}`.

@@ -1,0 +1,160 @@
+{
+  "D1-W1": {
+    "lock_waits": [
+      {
+        "waiting_pid": 7426,
+        "blocking_pid": 7412,
+        "wait_seconds": 18
+      }
+    ],
+    "long_queries": [
+      {
+        "pid": 7480,
+        "duration_seconds": 17,
+        "query_text": "order_list"
+      },
+      {
+        "pid": 7481,
+        "duration_seconds": 42,
+        "query_text": "report_summary"
+      }
+    ],
+    "query_stats": [
+      {
+        "queryid": 7431,
+        "total_exec_time_ms": 1200,
+        "mean_exec_time_ms": 12.0,
+        "calls": 100
+      },
+      {
+        "queryid": 7432,
+        "total_exec_time_ms": 900,
+        "mean_exec_time_ms": 90,
+        "calls": 10
+      },
+      {
+        "queryid": 7433,
+        "total_exec_time_ms": 400,
+        "mean_exec_time_ms": 40,
+        "calls": 10
+      }
+    ]
+  },
+  "D1-W2": {
+    "lock_waits": [],
+    "long_queries": [
+      {
+        "pid": 7580,
+        "duration_seconds": 18,
+        "query_text": "order_list"
+      },
+      {
+        "pid": 7581,
+        "duration_seconds": 49,
+        "query_text": "report_summary"
+      }
+    ],
+    "query_stats": [
+      {
+        "queryid": 7531,
+        "total_exec_time_ms": 1320,
+        "mean_exec_time_ms": 13.2,
+        "calls": 100
+      },
+      {
+        "queryid": 7532,
+        "total_exec_time_ms": 940,
+        "mean_exec_time_ms": 94,
+        "calls": 10
+      },
+      {
+        "queryid": 7533,
+        "total_exec_time_ms": 420,
+        "mean_exec_time_ms": 42,
+        "calls": 10
+      }
+    ]
+  },
+  "D2-W1": {
+    "lock_waits": [
+      {
+        "waiting_pid": 7626,
+        "blocking_pid": 7612,
+        "wait_seconds": 20
+      }
+    ],
+    "long_queries": [
+      {
+        "pid": 7680,
+        "duration_seconds": 19,
+        "query_text": "order_list"
+      },
+      {
+        "pid": 7681,
+        "duration_seconds": 56,
+        "query_text": "report_summary"
+      }
+    ],
+    "query_stats": [
+      {
+        "queryid": 7631,
+        "total_exec_time_ms": 1440,
+        "mean_exec_time_ms": 14.4,
+        "calls": 100
+      },
+      {
+        "queryid": 7632,
+        "total_exec_time_ms": 980,
+        "mean_exec_time_ms": 98,
+        "calls": 10
+      },
+      {
+        "queryid": 7633,
+        "total_exec_time_ms": 440,
+        "mean_exec_time_ms": 44,
+        "calls": 10
+      }
+    ]
+  },
+  "D2-W2": {
+    "lock_waits": [
+      {
+        "waiting_pid": 7726,
+        "blocking_pid": 7712,
+        "wait_seconds": 21
+      }
+    ],
+    "long_queries": [
+      {
+        "pid": 7780,
+        "duration_seconds": 20,
+        "query_text": "order_list"
+      },
+      {
+        "pid": 7781,
+        "duration_seconds": 67,
+        "query_text": "report_summary"
+      }
+    ],
+    "query_stats": [
+      {
+        "queryid": 7731,
+        "total_exec_time_ms": 1560,
+        "mean_exec_time_ms": 15.6,
+        "calls": 100
+      },
+      {
+        "queryid": 7732,
+        "total_exec_time_ms": 1020,
+        "mean_exec_time_ms": 102,
+        "calls": 10
+      },
+      {
+        "queryid": 7733,
+        "total_exec_time_ms": 460,
+        "mean_exec_time_ms": 46,
+        "calls": 10
+      }
+    ]
+  }
+}
