@@ -6,7 +6,7 @@ import jwt
 from fastapi import HTTPException, Request
 
 
-def require_operator(request: Request) -> None:
+def require_operator(request: Request) -> str:
     authorization = request.headers.get("authorization", "")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -30,3 +30,4 @@ def require_operator(request: Request) -> None:
 
     if claims.get("role") != "operator":
         raise HTTPException(status_code=403, detail="forbidden")
+    return "operator"

@@ -3,20 +3,19 @@
 import sqlglot
 from sqlglot import exp
 
+from .catalog import CATALOG, Schema
 
-SAFE_SQL = (
-    "SELECT waiting_pid, blocking_pid, wait_seconds "
-    "FROM diagnostics.lock_waits"
-)
-ALLOWED_COLUMNS = {"waiting_pid", "blocking_pid", "wait_seconds"}
+
+SAFE_SQL = CATALOG["lock_waits"].safe_sql
 
 
 class UnsafeSQL(ValueError):
     pass
 
 
-def validate_candidate_sql(candidate: str) -> str:
+def validate_candidate_sql(candidate: str, schema: Schema | None = None) -> str:
     """Parse the candidate, reject extra syntax, and return our own SQL text."""
+    schema = schema or CATALOG["lock_waits"]
     try:
         statements = sqlglot.parse(candidate, read="postgres", error_level="RAISE")
     except (sqlglot.errors.SqlglotError, TypeError) as exc:
@@ -32,21 +31,23 @@ def validate_candidate_sql(candidate: str) -> str:
 
     from_clause = select.args.get("from_")
     table = from_clause.this if isinstance(from_clause, exp.From) else None
+    schema_name, view_name = schema.view.split(".")
     if (not isinstance(table, exp.Table)
-            or table.name != "lock_waits"
-            or table.db != "diagnostics"
+            or table.name != view_name
+            or table.db != schema_name
             or table.catalog
             or table.alias
             or len(from_clause.args) != 1):
         raise UnsafeSQL("Only diagnostics.lock_waits is allowed")
 
     projections = select.expressions
-    if (len(projections) != 3
+    allowed_columns = set(schema.columns)
+    if (len(projections) != len(schema.columns)
             or not all(isinstance(item, exp.Column)
                        and not item.table and not item.db and not item.catalog
-                       and item.name in ALLOWED_COLUMNS
+                       and item.name in allowed_columns
                        for item in projections)
-            or {item.name for item in projections} != ALLOWED_COLUMNS):
-        raise UnsafeSQL("Only the three lock columns are allowed")
+            or {item.name for item in projections} != allowed_columns):
+        raise UnsafeSQL("Only the selected diagnostic columns are allowed")
 
-    return SAFE_SQL
+    return schema.safe_sql

@@ -1,0 +1,7 @@
+{"candidate_id":"lock-proposed-1","method":"proposed","role":"operator","question":"Hangi oturum hangisini engelliyor?","sql":"SELECT waiting_pid, blocking_pid, wait_seconds FROM diagnostics.lock_waits"}
+{"candidate_id":"lock-b2-1","method":"b2","role":"operator","question":"Hangi oturum hangisini engelliyor?","sql":"SELECT waiting_pid, blocking_pid, wait_seconds FROM diagnostics.lock_waits"}
+{"candidate_id":"lock-b3-1","method":"b3","role":"operator","question":"Hangi oturum hangisini engelliyor?","sql":"SELECT waiting_pid, blocking_pid, wait_seconds FROM diagnostics.lock_waits"}
+{"candidate_id":"lock-a1-1","method":"a1","role":"operator","question":"Hangi oturum hangisini engelliyor?","sql":"SELECT waiting_pid, blocking_pid, wait_seconds FROM diagnostics.lock_waits"}
+{"candidate_id":"long-proposed-1","method":"proposed","role":"operator","question":"Uzun süren sorgular hangileri?","sql":"SELECT pid, duration_seconds, query_text FROM diagnostics.long_queries"}
+{"candidate_id":"cost-total-1","method":"b3","role":"operator","question":"En pahalı sorgu hangisi?","metric":"total","sql":"SELECT queryid, total_exec_time_ms, mean_exec_time_ms, calls FROM diagnostics.query_stats"}
+{"candidate_id":"unsafe-1","method":"b2","role":"operator","question":"Hangi oturum hangisini engelliyor?","sql":"SELECT * FROM pg_catalog.pg_stat_activity"}

@@ -5,6 +5,9 @@ server-signed operator bearer token is required. A signed viewer token returns H
 before any Hugging Face or PostgreSQL call. The role is read only from the verified JWT,
 never from the request body or an untrusted role header.
 
+Optional request fields are `method` (`proposed`, `b2`, `b3`, or `a1`; default
+`proposed`) and `metric` (`total` or `mean` for expensive-query questions).
+
 The response contract is:
 
 ```json
@@ -13,6 +16,36 @@ The response contract is:
 
 When there are no waits, `rows` is `[]`. Model failures, unsafe SQL, and database
 failures return an HTTP error; no partial data is returned.
+
+## Schema catalog and methods
+
+The catalog in `app/catalog.py` assigns every view its columns, source, and
+permitted role. Only `operator` can see any diagnostic schema. Turkish question
+terms select `lock_waits`, `long_queries`, or `query_stats`; an unsupported
+question returns HTTP 422. All generated SQL must select exactly the catalog
+columns from the selected view. SQLGlot validates the candidate, and the API
+uses its own canonical SQL after validation.
+
+| Method | Prompt schema | Examples | Execution |
+| --- | --- | --- | --- |
+| `b2` | Fixed catalog of all operator views | None (zero-shot) | Selected view only |
+| `b3` | Same fixed catalog | Three question/SQL examples (few-shot) | Selected view only |
+| `a1` | Same fixed catalog | None; proposed-style prompt without dynamic schema selection | Selected view only |
+| `proposed` | Only the question-selected view | None | Selected view only |
+
+All online methods use `HF_TOKEN`, `HF_MODEL`, a 15-second HTTP timeout,
+`temperature=0`, and `max_tokens=128`. The lock view is live PostgreSQL. The
+`diagnostics.long_queries(pid, duration_seconds, query_text)` and
+`diagnostics.query_stats(queryid, total_exec_time_ms, mean_exec_time_ms, calls)`
+catalog entries are **provisional**: the model SQL is validated, then the API
+returns controlled fixture rows with `source: "controlled_fixture"`. No
+PostgreSQL query is made for these two intents until Yusuf's view and permission
+contracts are agreed.
+
+`{"question":"En pahalı sorgu hangisi?"}` first returns
+`{"status":"clarification_required","intent":"query_stats","rows":[],"source":"schema_catalog","clarification":{"question":"Toplam çalışma süresi mi, çağrı başına ortalama süre mi?","options":["total","mean"]}}`.
+Repeat the request with `"metric":"total"` or `"metric":"mean"`. The
+controlled fixture ranks different query IDs for those two metrics.
 
 ## Setup (PowerShell, Python 3.11+)
 
@@ -46,11 +79,46 @@ test only, this command makes a short-lived operator token using the configured
 secret:
 
 ```powershell
-python -c "import os,time,jwt; n=int(time.time()); print(jwt.encode({'sub':'local-test','role':'operator','iss':os.getenv('DIAGNOSTICS_AUTH_ISSUER','postgresql-diagnostics-auth'),'aud':os.getenv('DIAGNOSTICS_AUTH_AUDIENCE','postgresql-diagnostics-api'),'iat':n,'exp':n+300},os.environ['DIAGNOSTICS_AUTH_SECRET'],algorithm='HS256'))"
+$token = python -c "import os,time,jwt; n=int(time.time()); print(jwt.encode({'sub':'local-test','role':'operator','iss':os.getenv('DIAGNOSTICS_AUTH_ISSUER','postgresql-diagnostics-auth'),'aud':os.getenv('DIAGNOSTICS_AUTH_AUDIENCE','postgresql-diagnostics-api'),'iat':n,'exp':n+300},os.environ['DIAGNOSTICS_AUTH_SECRET'],algorithm='HS256'))"
 ```
 
 Then send `POST http://127.0.0.1:8000/diagnose` with `Authorization: Bearer <token>`
 and a JSON body containing `question`.
+
+Bedo can invoke every online method with the same authenticated endpoint:
+
+```powershell
+$headers = @{ Authorization = "Bearer $token" }
+foreach ($method in @('b2', 'b3', 'a1', 'proposed')) {
+  $body = @{ question = 'Hangi oturum hangisini engelliyor?'; method = $method } | ConvertTo-Json
+  Invoke-RestMethod -Uri 'http://127.0.0.1:8000/diagnose' -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+}
+$body = @{ question = 'En pahalı sorgu hangisi?' } | ConvertTo-Json
+Invoke-RestMethod -Uri 'http://127.0.0.1:8000/diagnose' -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+$body = @{ question = 'En pahalı sorgu hangisi?'; metric = 'mean'; method = 'proposed' } | ConvertTo-Json
+Invoke-RestMethod -Uri 'http://127.0.0.1:8000/diagnose' -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+```
+
+For an immediately runnable example without HF or PostgreSQL credentials, use
+`python -m examples.bedo_demo`. It sends the same requests through FastAPI's
+test client with controlled model output and a controlled lock row. Successful
+responses contain `status`, `intent`, `rows`, and `source`; ambiguous cost
+questions also contain `clarification`.
+
+**A2 offline replay:** Put recorded candidate SQL from any method in JSONL
+records with `candidate_id`, `method`, `role`, `question`, `sql`, and optional
+`metric`. The role in this offline file is evaluation input, never an API
+authentication claim. Run:
+
+```powershell
+python -m app.offline_validator examples/recorded_candidates.jsonl
+```
+
+Each output JSONL record contains `candidate_id`, `method`, `accepted`, and
+`intent` when known. Accepted records include `normalized_sql`; rejected
+records include `reason`. The example replays identical saved lock SQL for B2,
+B3, A1, and proposed, and an unsafe candidate. A2 makes no model or database
+call.
 
 ## Database contract
 
@@ -72,8 +140,8 @@ GRANT SELECT ON diagnostics.lock_waits TO lock_diagnostics_reader;
 Do not grant base table access or write privileges to that role. The API also
 sets the PostgreSQL transaction to read only and applies a local 3-second
 statement timeout. The model's output is parsed with SQLGlot and must be a
-single `SELECT` of exactly those three columns from that view. The API sends
-its own fixed statement to PostgreSQL after validation.
+single `SELECT` of exactly the selected catalog columns from the selected
+view. The API sends its own fixed statement to PostgreSQL after validation.
 
 When Yusuf provides the final view, coordinate its name, columns, value types,
 and privileges before replacing the temporary contract. Bedo can consume the
@@ -87,13 +155,13 @@ cd api
 python -m pytest -q
 ```
 
-The tests stub Hugging Face and PostgreSQL. They cover signed operator access,
-viewer rejection before either adapter is called, empty results, unsafe SQL
-rejection before database access, invalid signatures, and the database adapter's
-read-only transaction and timeout setup. These tests do not contact Hugging Face
-or PostgreSQL. Live Hugging Face inference remains untested.
+The 31 controlled tests cover the original 12 authentication, lock, SQL guard,
+and adapter checks plus Turkish intent/role selection, B2/B3/A1/proposed
+prompts and API calls, cost clarification and metric ranking, provisional rows,
+and A2 replay. They do not contact Hugging Face or PostgreSQL. Live Hugging Face
+inference remains untested when no token/model is configured.
 
-The two-database PostgreSQL regression test is separate from the 12 controlled
+The two-database PostgreSQL regression test is separate from the controlled
 tests. Run it against an isolated PostgreSQL 14+ instance with a role that can
 create databases and roles:
 

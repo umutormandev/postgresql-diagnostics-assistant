@@ -1,0 +1,85 @@
+"""Versioned, explicit diagnostic schemas and role permissions."""
+
+from dataclasses import dataclass
+import unicodedata
+
+
+@dataclass(frozen=True)
+class Schema:
+    intent: str
+    view: str
+    columns: tuple[str, ...]
+    roles: tuple[str, ...]
+    source: str
+    live: bool
+
+    @property
+    def safe_sql(self) -> str:
+        return f"SELECT {', '.join(self.columns)} FROM {self.view}"
+
+    def describe(self) -> str:
+        return f"{self.view}({', '.join(self.columns)})"
+
+
+CATALOG = {
+    "lock_waits": Schema(
+        "lock_waits", "diagnostics.lock_waits",
+        ("waiting_pid", "blocking_pid", "wait_seconds"),
+        ("operator",), "pg_blocking_pids + pg_locks", True,
+    ),
+    "long_queries": Schema(
+        "long_queries", "diagnostics.long_queries",
+        ("pid", "duration_seconds", "query_text"),
+        ("operator",), "controlled_fixture", False,
+    ),
+    "query_stats": Schema(
+        "query_stats", "diagnostics.query_stats",
+        ("queryid", "total_exec_time_ms", "mean_exec_time_ms", "calls"),
+        ("operator",), "controlled_fixture", False,
+    ),
+}
+
+FIXTURE_ROWS = {
+    "long_queries": [
+        {"pid": 7312, "duration_seconds": 42, "query_text": "SELECT * FROM orders"},
+    ],
+    "query_stats": [
+        {"queryid": 901, "total_exec_time_ms": 1200, "mean_exec_time_ms": 12, "calls": 100},
+        {"queryid": 902, "total_exec_time_ms": 900, "mean_exec_time_ms": 90, "calls": 10},
+    ],
+}
+
+
+def _normalize(question: str) -> str:
+    normalized = unicodedata.normalize("NFKD", question.casefold().replace("ı", "i"))
+    return "".join(char for char in normalized if not unicodedata.combining(char))
+
+
+def select_schema(question: str, role: str) -> Schema:
+    """Choose only an authorized schema from Turkish or English intent terms."""
+    if role != "operator":
+        raise PermissionError("forbidden")
+    words = _normalize(question)
+    if any(term in words for term in ("pahali", "istatistik", "statistics", "total", "ortalama", "mean")):
+        intent = "query_stats"
+    elif any(term in words for term in ("uzun", "yavas", "long", "slow")):
+        intent = "long_queries"
+    elif any(term in words for term in ("kilit", "engell", "oturum", "lock", "block")):
+        intent = "lock_waits"
+    else:
+        raise ValueError("Unsupported diagnostic question")
+    schema = CATALOG[intent]
+    if role not in schema.roles:
+        raise PermissionError("forbidden")
+    return schema
+
+
+def visible_schemas(role: str) -> tuple[Schema, ...]:
+    return tuple(schema for schema in CATALOG.values() if role in schema.roles)
+
+
+def needs_cost_clarification(question: str, schema: Schema, metric: str | None) -> bool:
+    words = _normalize(question)
+    return schema.intent == "query_stats" and metric is None and (
+        "pahali" in words or "most expensive" in words
+    )
