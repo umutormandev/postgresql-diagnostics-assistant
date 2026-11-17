@@ -90,5 +90,22 @@ python -m pytest -q
 The tests stub Hugging Face and PostgreSQL. They cover signed operator access,
 viewer rejection before either adapter is called, empty results, unsafe SQL
 rejection before database access, invalid signatures, and the database adapter's
-read-only transaction and timeout setup. Live Hugging Face and PostgreSQL
-integration requires configured services and credentials.
+read-only transaction and timeout setup. These tests do not contact Hugging Face
+or PostgreSQL. Live Hugging Face inference remains untested.
+
+The two-database PostgreSQL regression test is separate from the 12 controlled
+tests. Run it against an isolated PostgreSQL 14+ instance with a role that can
+create databases and roles:
+
+```powershell
+docker run --rm -d --name lock-diag-test -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55432:5432 postgres:17-alpine
+$env:TEST_POSTGRES_ADMIN_URL = "postgresql://postgres@127.0.0.1:55432/postgres"
+python -m pytest integration/test_lock_waits_postgres.py -q
+docker stop lock-diag-test
+```
+
+The test creates two temporary databases and a restricted API role, then drops
+them. It verifies the actual API response while a lock exists in the connected
+database and while a lock exists only in the other database. Hugging Face SQL
+generation is stubbed; the PostgreSQL view and API database query are live.
+Use a free localhost port in the command and URL if 55432 is occupied.

@@ -17,4 +17,5 @@ LEFT JOIN LATERAL (
     SELECT min(lock_row.waitstart) AS waitstart
     FROM pg_catalog.pg_locks AS lock_row
     WHERE lock_row.pid = waiter.pid AND NOT lock_row.granted
-) AS wait_lock ON TRUE;
+) AS wait_lock ON TRUE
+WHERE waiter.datname = current_database();
