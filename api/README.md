@@ -22,9 +22,11 @@ failures return an HTTP error; no partial data is returned.
 The catalog in `app/catalog.py` assigns every view its columns, source, and
 permitted role. Only `operator` can see any diagnostic schema. Turkish question
 terms select `lock_waits`, `long_queries`, or `query_stats`; an unsupported
-question returns HTTP 422. All generated SQL must select exactly the catalog
-columns from the selected view. SQLGlot validates the candidate, and the API
-uses its own canonical SQL after validation.
+question returns HTTP 422. SQLGlot validates one `SELECT` over the selected
+view. Explicit catalog columns are accepted; a lone `SELECT *` over exactly
+that view is expanded to the fixed catalog projection, including when the
+model wraps it in a single SQL code fence. Extra clauses, tables, statements,
+or expressions are rejected. The raw model SQL is never sent to PostgreSQL.
 
 | Method | Prompt schema | Examples | Execution |
 | --- | --- | --- | --- |
@@ -33,8 +35,14 @@ uses its own canonical SQL after validation.
 | `a1` | Same fixed catalog | Same three development examples as proposed | Selected view only |
 | `proposed` | Only the question-selected view | Same three development examples as A1 | Selected view only |
 
-All online methods use `HF_TOKEN`, `HF_MODEL`, a 15-second HTTP timeout,
-`temperature=0`, and `max_tokens=128`. Proposed and A1 use the same prompt
+All online methods use the same selected provider and generation settings.
+Hugging Face is the default (`HF_TOKEN`, `HF_MODEL`, 15-second HTTP timeout,
+`temperature=0`, `max_tokens=128`). Set
+`DIAGNOSTICS_MODEL_PROVIDER=ollama` to use local Ollama instead; the defaults
+are `OLLAMA_MODEL=qwen2.5-coder:3b` and
+`OLLAMA_BASE_URL=http://127.0.0.1:11434`. Ollama uses non-streaming
+`POST /api/chat`, `temperature=0`, `num_predict=128`, and a **240-second read
+timeout for the first response**. Proposed and A1 use the same prompt
 builder for every intent, including locks; only the schema context changes.
 The lock view is live PostgreSQL. The
 `diagnostics.long_queries(pid, duration_seconds, query_text)` and
@@ -77,6 +85,17 @@ $env:HF_MODEL = "<chat-completion-capable model ID>"
 $env:DIAGNOSTICS_DATABASE_URL = "postgresql://lock_diagnostics_reader:<password>@<host>:5432/<database>"
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
+
+For an Ollama-backed API process, set these before starting `uvicorn` instead
+of configuring `HF_TOKEN` and `HF_MODEL`:
+
+```powershell
+$env:DIAGNOSTICS_MODEL_PROVIDER = "ollama"
+$env:OLLAMA_MODEL = "qwen2.5-coder:3b"
+$env:OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+```
+
+If `DIAGNOSTICS_MODEL_PROVIDER` is unset, Hugging Face remains the provider.
 
 The JWT issuer must sign HS256 tokens with the same secret. Each token needs `sub`,
 `role`, `iss`, `aud`, `iat`, and `exp` claims. Supported roles are `operator` and
@@ -190,3 +209,27 @@ them. It verifies the actual API response while a lock exists in the connected
 database and while a lock exists only in the other database. Hugging Face SQL
 generation is stubbed; the PostgreSQL view and API database query are live.
 Use a free localhost port in the command and URL if 55432 is occupied.
+
+## Local Ollama lock pilot
+
+Start Ollama and make sure `qwen2.5-coder:3b` appears in
+`http://127.0.0.1:11434/api/tags` (pull it with
+`ollama pull qwen2.5-coder:3b` if needed). From `api/`, run:
+
+```powershell
+$env:DIAGNOSTICS_MODEL_PROVIDER = "ollama"
+$env:OLLAMA_MODEL = "qwen2.5-coder:3b"
+$env:OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+docker run --rm -d --name lock-ollama-pilot -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55433:5432 postgres:17-alpine
+$env:TEST_POSTGRES_ADMIN_URL = "postgresql://postgres@127.0.0.1:55433/postgres"
+python -m integration.pilot_ollama_lock
+python -m app.offline_validator .pilot/ollama_candidates.jsonl | Tee-Object -FilePath .pilot/ollama_a2_results.jsonl
+docker stop lock-ollama-pilot
+```
+
+The pilot creates a temporary database, a restricted view reader, and a real
+blocking lock. It sends `POST /diagnose` for B2, B3, A1, and proposed while
+the lock is held and after it is released. It asserts the actual waiting and
+blocking PIDs, then checks empty `rows`. Raw candidate SQL, SQLGlot verdicts,
+and API responses are written to ignored `api/.pilot/`; the A2 command
+revalidates those exact candidates offline. See the [recorded local result](integration/ollama_pilot_results.md).

@@ -118,6 +118,31 @@ def test_valid_sql_is_replaced_with_fixed_statement():
     ) == SAFE_SQL
 
 
+def test_fenced_star_is_expanded_to_fixed_projection(monkeypatch):
+    monkeypatch.setattr(
+        main, "generate_method_sql",
+        lambda *args: "```sql\nSELECT * FROM diagnostics.lock_waits;\n```",
+    )
+    executed = []
+    monkeypatch.setattr(main, "fetch_lock_waits", lambda sql: executed.append(sql) or [])
+    response = client.post(
+        "/diagnose", json={"question": "Hangi oturumlar kilit bekliyor?"},
+        headers=bearer("operator"),
+    )
+    assert response.status_code == 200
+    assert executed == [SAFE_SQL]
+
+
+@pytest.mark.parametrize("candidate", [
+    "SELECT * FROM diagnostics.lock_waits WHERE true",
+    "SELECT * FROM diagnostics.lock_waits JOIN pg_catalog.pg_stat_activity ON true",
+    "```sql\nSELECT * FROM diagnostics.lock_waits; DELETE FROM x;\n```",
+])
+def test_star_normalization_does_not_allow_extra_sql(candidate):
+    with pytest.raises(UnsafeSQL):
+        validate_candidate_sql(candidate)
+
+
 def test_extra_statement_is_rejected():
     with pytest.raises(UnsafeSQL):
         validate_candidate_sql(SAFE_SQL + "; SELECT 1")

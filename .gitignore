@@ -1,3 +1,4 @@
 api/.venv/
+api/.pilot/
 **/__pycache__/
 .pytest_cache/

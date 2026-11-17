@@ -21,6 +21,15 @@ class ServiceUnavailable(RuntimeError):
 
 
 def _chat_completion(messages: list[dict[str, str]]) -> str:
+    provider = os.getenv("DIAGNOSTICS_MODEL_PROVIDER", "huggingface").lower()
+    if provider == "ollama":
+        return _ollama_completion(messages)
+    if provider != "huggingface":
+        raise ServiceUnavailable("Unknown model provider")
+    return _huggingface_completion(messages)
+
+
+def _huggingface_completion(messages: list[dict[str, str]]) -> str:
     token = os.getenv("HF_TOKEN")
     model = os.getenv("HF_MODEL")
     if not token or not model:
@@ -47,6 +56,30 @@ def _chat_completion(messages: list[dict[str, str]]) -> str:
         raise ServiceUnavailable("Hugging Face request failed") from exc
 
 
+def _ollama_completion(messages: list[dict[str, str]]) -> str:
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
+    try:
+        timeout = httpx.Timeout(240.0, connect=10.0)
+        with httpx.Client(timeout=timeout, trust_env=False) as client:
+            response = client.post(
+                f"{base_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {"temperature": 0, "num_predict": 128},
+                },
+            )
+            response.raise_for_status()
+            content = response.json()["message"]["content"]
+            if not isinstance(content, str):
+                raise ValueError("Missing model content")
+            return content.strip()
+    except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
+        raise ServiceUnavailable("Ollama request failed") from exc
+
+
 def generate_candidate_sql(question: str) -> str:
     """Backward-compatible lock helper using the proposed prompt builder."""
     return generate_method_sql(question, "proposed", CATALOG["lock_waits"])
@@ -64,13 +97,17 @@ def build_messages(
         system = (
             "Generate one PostgreSQL SELECT for the question using this fixed schema: "
             f"{context}. Return only SQL. Select every column of the relevant view. "
-            "No joins, functions, filters, ordering or other clauses."
+            "Spell out each column name; never use SELECT *. Do not add markdown "
+            "fences, explanations or a semicolon. No joins, functions, filters, "
+            "ordering or other clauses."
         )
     elif method in {"a1", "proposed"}:
         system = (
             "You are a diagnostics SQL generator. Allowed schema: "
             f"{context}. Return one SELECT of every column of the relevant view only; "
-            "no joins, functions, filters, ordering or other clauses."
+            "spell out each column name; never use SELECT *. Do not add markdown "
+            "fences, explanations or a semicolon. No joins, functions, filters, "
+            "ordering or other clauses."
         )
     messages = [{"role": "system", "content": system}]
     if method in {"b3", "a1", "proposed"}:
@@ -87,7 +124,7 @@ def build_messages(
 def generate_method_sql(
     question: str, method: str, selected: Schema, metric: str | None = None
 ) -> str:
-    """All methods share the same HF model, timeout, temperature and token limit."""
+    """All methods share the selected provider, model and generation options."""
     return _chat_completion(build_messages(question, method, selected, metric))
 
 
