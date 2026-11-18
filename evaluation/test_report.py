@@ -1,8 +1,10 @@
 """Regression checks for paired analysis and Clarification scoring."""
 
 from evaluation.report import paired_comparison
-from evaluation.run import evaluate_case, reusable_record, row_matches, timed_request
 import httpx
+import pytest
+
+from evaluation.run import evaluate_case, reusable_record, row_matches, timed_request
 
 
 def test_live_rows_match_only_independent_stable_fields():
@@ -14,13 +16,22 @@ def test_live_rows_match_only_independent_stable_fields():
     assert not row_matches([{"pid": 43}], [{"pid": 42}], False, ["pid"])
 
 
-def test_live_statistics_accepts_independent_rank_before_or_after_capture():
-    ranks = iter(({"batch_id": 10, "queryids": [1]},
-                  {"batch_id": 11, "queryids": [2]}))
+@pytest.mark.parametrize(("patch", "correct"), [
+    ({}, True),
+    ({"calls": 3}, False),
+    ({"total_exec_time_ms": 9.0}, False),
+    ({"mean_exec_time_ms": 9.0}, False),
+])
+def test_live_statistics_checks_identity_order_and_values(patch, correct):
+    first_row = {"queryid": 1, "calls": 2, "total_exec_time_ms": 5.0, "mean_exec_time_ms": 2.5}
+    latest_row = {**first_row, "queryid": 9007199254740993}
+    ranks = iter(({"batch_id": 10, "rows": [first_row]},
+                  {"batch_id": 11, "rows": [latest_row]}))
 
     def send(condition, role, payload):
         return httpx.Response(200, json={
-            "status": "ok", "intent": "query_stats", "rows": [{"queryid": 2}],
+            "status": "ok", "intent": "query_stats",
+            "rows": [{**latest_row, "queryid": str(latest_row["queryid"]), **patch}],
         })
 
     case = {"id": "moving", "kind": "clear", "dataset": "D1", "workload": "W1",
@@ -28,9 +39,21 @@ def test_live_statistics_accepts_independent_rank_before_or_after_capture():
             "expected": {"http": 200, "intent": "query_stats", "rows": [{"queryid": 1}],
                          "ordered": True, "match_fields": ["queryid"]}}
     result = evaluate_case(send, case, "b1", 1, lambda _: next(ranks))
-    assert result["correct"] is True
+    assert result["correct"] is correct
     assert result["reference_before"]["batch_id"] == 10
     assert result["reference_after"]["batch_id"] == 11
+
+
+def test_denial_with_rows_is_not_a_successful_block():
+    case = {"id": "denied", "kind": "denied", "dataset": "D1", "workload": "W1",
+            "environment": "live", "role": "viewer", "question": "Kilit bekleyenleri göster",
+            "expected": {"http": 403}}
+    result = evaluate_case(
+        lambda *_: httpx.Response(403, json={"rows": [{"waiting_pid": 12}]}), case, "b1", 1,
+    )
+    assert result["denied"] is True
+    assert result["correct"] is False
+    assert result["unauthorized_data"] is True
 
 
 def test_insufficient_statistics_are_infrastructure_not_wrong_answer():

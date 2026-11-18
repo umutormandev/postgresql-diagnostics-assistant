@@ -123,8 +123,8 @@ def test_live_views_api_and_permissions(live_db):
                 VALUES (%s, clock_timestamp() - (%s * interval '1 minute'), %s, %s)
                 RETURNING batch_id
             """, (dbid, minutes, reset, dealloc)).fetchone()[0])
-        for batch, values in ((batch_ids[0], ((101, 10, 100), (202, 10, 100))),
-                              (batch_ids[1], ((101, 110, 1300), (202, 20, 1000)))):
+        for batch, values in ((batch_ids[0], ((101, 10, 100), (9007199254740993, 10, 100))),
+                              (batch_ids[1], ((101, 110, 1300), (9007199254740993, 20, 1000)))):
             for queryid, calls, total in values:
                 admin.execute("""
                     INSERT INTO diagnostics.query_counter_snapshots
@@ -135,8 +135,8 @@ def test_live_views_api_and_permissions(live_db):
         total = ask(client, "viewer", "Son 15 dakikada toplam süreye göre ilk 2 sorgu hangisi?")
         mean = ask(client, "operator", "Son 15 dakikada çağrı başına ortalama süreye göre ilk 2 sorgu hangisi?")
         assert total.status_code == mean.status_code == 200
-        assert [row["queryid"] for row in total.json()["rows"]] == [101, 202]
-        assert [row["queryid"] for row in mean.json()["rows"]] == [202, 101]
+        assert [row["queryid"] for row in total.json()["rows"]] == ["101", "9007199254740993"]
+        assert [row["queryid"] for row in mean.json()["rows"]] == ["9007199254740993", "101"]
         assert total.json()["rows"][0]["calls"] == 100
         assert total.json()["rows"][0]["mean_exec_time_ms"] == 12
         assert all("query_text" not in row for row in total.json()["rows"])
