@@ -78,23 +78,25 @@ def _assert_lock_scenario(
             worker.start()
             _wait_for_block(admin_url, dbname, waiting_pid, blocking_pid)
 
-            response = client.post(
-                "/diagnose",
-                json={"question": "Which session blocks which?"},
-                headers={"Authorization": f"Bearer {_operator_token()}"},
-            )
-            assert response.status_code == 200, response.text
-            body = response.json()
-            assert body["status"] == "ok"
-            assert body["intent"] == "lock_waits"
-            assert body["source"] == "pg_blocking_pids + pg_locks"
-            if expected_visible:
-                assert len(body["rows"]) == 1
-                assert body["rows"][0]["waiting_pid"] == waiting_pid
-                assert body["rows"][0]["blocking_pid"] == blocking_pid
-                assert body["rows"][0]["wait_seconds"] >= 0
-            else:
-                assert body["rows"] == []
+            for method in ("proposed", "b1"):
+                response = client.post(
+                    "/diagnose",
+                    json={"question": "Which session blocks which?", "method": method},
+                    headers={"Authorization": f"Bearer {_operator_token()}"},
+                )
+                assert response.status_code == 200, response.text
+                assert response.headers["Server-Timing"].startswith("db;dur=")
+                body = response.json()
+                assert body["status"] == "ok"
+                assert body["intent"] == "lock_waits"
+                assert body["source"] == "pg_blocking_pids + pg_locks"
+                if expected_visible:
+                    assert len(body["rows"]) == 1
+                    assert body["rows"][0]["waiting_pid"] == waiting_pid
+                    assert body["rows"][0]["blocking_pid"] == blocking_pid
+                    assert body["rows"][0]["wait_seconds"] >= 0
+                else:
+                    assert body["rows"] == []
 
         worker.join(timeout=5)
         assert not worker.is_alive()

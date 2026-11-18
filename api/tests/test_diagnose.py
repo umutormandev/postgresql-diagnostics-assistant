@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.sql_guard import SAFE_SQL, UnsafeSQL, validate_candidate_sql
+from app.catalog import CATALOG
 
 
 SECRET = "test-secret-with-at-least-thirty-two-characters"
@@ -116,6 +117,39 @@ def test_valid_sql_is_replaced_with_fixed_statement():
     assert validate_candidate_sql(
         "select blocking_pid, wait_seconds, waiting_pid from diagnostics.lock_waits;"
     ) == SAFE_SQL
+
+
+def test_safe_model_sort_and_limit_are_validated_but_not_executed():
+    candidate = SAFE_SQL + " ORDER BY wait_seconds DESC LIMIT 2"
+    assert validate_candidate_sql(candidate) == SAFE_SQL
+
+
+def test_simple_duration_filter_is_replaced_by_fixed_long_query_projection():
+    schema = CATALOG["long_queries"]
+    assert validate_candidate_sql(schema.safe_sql + " WHERE duration_seconds > 25", schema) == schema.safe_sql
+
+
+@pytest.mark.parametrize("suffix", [
+    "WHERE duration_seconds > pg_sleep(1)",
+    "WHERE duration_seconds > 25 OR true",
+    "WHERE pid > 25",
+])
+def test_unsafe_long_query_filter_is_rejected(suffix):
+    schema = CATALOG["long_queries"]
+    with pytest.raises(UnsafeSQL):
+        validate_candidate_sql(schema.safe_sql + " " + suffix, schema)
+
+
+@pytest.mark.parametrize("suffix", [
+    "ORDER BY pg_sleep(1) LIMIT 1",
+    "ORDER BY wait_seconds LIMIT 1000",
+    "ORDER BY wait_seconds LIMIT -1",
+    "ORDER BY wait_seconds LIMIT 2 OFFSET 1",
+    "WHERE wait_seconds > 0 ORDER BY wait_seconds LIMIT 2",
+])
+def test_unsafe_sort_or_limit_is_rejected(suffix):
+    with pytest.raises(UnsafeSQL):
+        validate_candidate_sql(SAFE_SQL + " " + suffix)
 
 
 def test_fenced_star_is_expanded_to_fixed_projection(monkeypatch):

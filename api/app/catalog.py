@@ -1,6 +1,7 @@
 """Versioned, explicit diagnostic schemas and role permissions."""
 
 from dataclasses import dataclass
+import re
 import unicodedata
 
 
@@ -30,12 +31,12 @@ CATALOG = {
     "long_queries": Schema(
         "long_queries", "diagnostics.long_queries",
         ("pid", "duration_seconds", "query_text"),
-        ("operator",), "controlled_fixture", False,
+        ("operator",), "pg_stat_activity", True,
     ),
     "query_stats": Schema(
         "query_stats", "diagnostics.query_stats",
         ("queryid", "total_exec_time_ms", "mean_exec_time_ms", "calls"),
-        ("operator",), "controlled_fixture", False,
+        ("operator", "viewer"), "pg_stat_statements snapshots", True,
     ),
 }
 
@@ -57,15 +58,17 @@ def _normalize(question: str) -> str:
 
 def select_schema(question: str, role: str) -> Schema:
     """Choose only an authorized schema from Turkish or English intent terms."""
-    if role != "operator":
-        raise PermissionError("forbidden")
     words = _normalize(question)
+    if role not in ("operator", "viewer") or re.search(
+        r"\b(sil|guncelle|kapat|sonlandir|degistir|iptal et|delete|update|terminate)\b", words
+    ):
+        raise PermissionError("forbidden")
     if any(term in words for term in (
         "pahali", "istatistik", "statistics", "toplam", "total",
         "ortalama", "cagri basina", "mean", "average",
     )):
         intent = "query_stats"
-    elif any(term in words for term in ("uzun", "yavas", "long", "slow")):
+    elif any(term in words for term in ("uzun", "yavas", "aktif sorgu", "long", "slow", "active quer")):
         intent = "long_queries"
     elif any(term in words for term in ("kilit", "engell", "oturum", "lock", "block")):
         intent = "lock_waits"
@@ -101,3 +104,16 @@ def needs_cost_clarification(question: str, schema: Schema, metric: str | None) 
     return schema.intent == "query_stats" and metric is None and (
         "pahali" in words or "most expensive" in words
     )
+
+
+def requested_limits(question: str, schema: Schema) -> tuple[int | None, int | None, int]:
+    """Extract the optional duration, time window and result count."""
+    words = _normalize(question)
+    if schema.intent == "long_queries":
+        duration = re.search(r"\b(\d{1,9})\s*saniye(?:yi|den)?\b", words)
+        return (int(duration[1]) if duration else None), None, 1
+    if schema.intent == "query_stats":
+        window = re.search(r"\bson\s+(\d{1,9})\s*dakika", words)
+        count = re.search(r"\b(\d{1,9})\s+sorgu", words)
+        return None, (int(window[1]) if window else None), (int(count[1]) if count else 1)
+    return None, None, 1

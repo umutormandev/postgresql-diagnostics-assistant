@@ -1,11 +1,11 @@
 # Lock diagnostics API
 
 `POST /diagnose` accepts `{"question":"Hangi oturum hangisini engelliyor?"}`. A valid,
-server-signed operator bearer token is required. A signed viewer token returns HTTP 403
-before any Hugging Face or PostgreSQL call. The role is read only from the verified JWT,
-never from the request body or an untrusted role header.
+server-signed operator bearer token is required. Viewer requests for lock or active-session details return HTTP 403.
+Both roles can request query statistics. The API derives the role from the
+verified JWT before making model or database calls.
 
-Optional request fields are `method` (`proposed`, `b2`, `b3`, or `a1`; default
+Optional request fields are `method` (`proposed`, `b1`, `b2`, `b3`, or `a1`; default
 `proposed`) and `metric` (`total` or `mean` for expensive-query questions).
 
 The response contract is:
@@ -20,22 +20,29 @@ failures return an HTTP error; no partial data is returned.
 ## Schema catalog and methods
 
 The catalog in `app/catalog.py` assigns every view its columns, source, and
-permitted role. Only `operator` can see any diagnostic schema. Turkish question
+permitted role. The operator can see all three schemas. The viewer sees the
+statistics schema. Turkish question
 terms select `lock_waits`, `long_queries`, or `query_stats`; an unsupported
 question returns HTTP 422. SQLGlot validates one `SELECT` over the selected
 view. Explicit catalog columns are accepted; a lone `SELECT *` over exactly
 that view is expanded to the fixed catalog projection, including when the
-model wraps it in a single SQL code fence. Extra clauses, tables, statements,
-or expressions are rejected. The raw model SQL is never sent to PostgreSQL.
+model wraps it in a single SQL code fence. An `ORDER BY` of approved columns
+and a literal `LIMIT` from 1 through 100 are accepted but discarded. For
+`long_queries`, a single numeric comparison on `duration_seconds` is also
+accepted but replaced by the API's own parsed threshold. The API sorts and
+limits after executing its fixed projection. Other filters, joins, functions,
+offsets, extra statements, and expressions are rejected. The raw
+model SQL is never sent to PostgreSQL.
 
 | Method | Prompt schema | Examples | Execution |
 | --- | --- | --- | --- |
-| `b2` | Fixed catalog of all operator views | None (zero-shot) | Selected view only |
+| `b1` | Predefined SQL for the selected view | None | Selected view only |
+| `b2` | Fixed catalog of role-permitted views | None (zero-shot) | Selected view only |
 | `b3` | Same fixed catalog | Three question/SQL examples (few-shot) | Selected view only |
 | `a1` | Same fixed catalog | Same three development examples as proposed | Selected view only |
 | `proposed` | Only the question-selected view | Same three development examples as A1 | Selected view only |
 
-All online methods use the same selected provider and generation settings.
+All model-based methods use the same selected provider and generation settings.
 Hugging Face is the default (`HF_TOKEN`, `HF_MODEL`, 15-second HTTP timeout,
 `temperature=0`, `max_tokens=128`). Set
 `DIAGNOSTICS_MODEL_PROVIDER=ollama` to use local Ollama instead; the defaults
@@ -44,16 +51,22 @@ are `OLLAMA_MODEL=qwen2.5-coder:3b` and
 `POST /api/chat`, `temperature=0`, `num_predict=128`, and a **240-second read
 timeout for the first response**. Proposed and A1 use the same prompt
 builder for every intent, including locks; only the schema context changes.
-The lock view is live PostgreSQL. The
+All three views are backed by live PostgreSQL 17. The
 `diagnostics.long_queries(pid, duration_seconds, query_text)` and
 `diagnostics.query_stats(queryid, total_exec_time_ms, mean_exec_time_ms, calls)`
-catalog entries are **provisional**. In normal API mode, after any needed metric
-clarification, either intent returns HTTP 503 with
+catalog entries use the SQL files below. Without a configured live database,
+normal API mode returns HTTP 503 with
 `{"status":"unavailable","intent":"long_queries","rows":[],"source":"unavailable","detail":"Live diagnostic view is not available"}`
 (`intent` is `query_stats` for statistics). No model or PostgreSQL call occurs.
-Controlled fixture rows with `source: "controlled_fixture"` are available only
-when the server explicitly sets `DIAGNOSTICS_DEMO_MODE=1`, as the Bedo demo
-does. This mode is for development demonstrations, not production data.
+Controlled fixture rows carry `source: "controlled_fixture"`. They are available
+through the [local B1 demo](../evaluation/README.md) or by setting
+`DIAGNOSTICS_DEMO_MODE=1` for the two non-lock views. In demo mode the
+statistical rows represent a 15-minute window. Queries that name a different
+window return `status: "insufficient_data"`. Live statistics also return
+`{"status":"insufficient_data","intent":"query_stats","rows":[],"source":"pg_stat_statements snapshots","window_minutes":15}`
+until two valid captures 15–17 minutes apart exist; counter reset or regression
+invalidates the window. Live requests include database call time in the
+`Server-Timing` response header.
 
 `{"question":"En pahalı sorgu hangisi?"}` first returns
 `{"status":"clarification_required","intent":"query_stats","rows":[],"source":"schema_catalog","clarification":{"question":"Toplam çalışma süresi mi, çağrı başına ortalama süre mi?","options":["total","mean"]}}`.
@@ -83,6 +96,7 @@ $env:DIAGNOSTICS_AUTH_AUDIENCE = "postgresql-diagnostics-api"
 $env:HF_TOKEN = "<Hugging Face inference token>"
 $env:HF_MODEL = "<chat-completion-capable model ID>"
 $env:DIAGNOSTICS_DATABASE_URL = "postgresql://lock_diagnostics_reader:<password>@<host>:5432/<database>"
+$env:DIAGNOSTICS_VIEWER_DATABASE_URL = "postgresql://viewer_reader:<password>@<host>:5432/<database>"
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -126,9 +140,8 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8000/diagnose' -Method Post -Headers $h
 ```
 
 The ambiguous cost request above first returns the clarification in any mode.
-After a metric is chosen, normal mode returns the documented HTTP 503 until
-Yusuf's statistics view is ready. Run the controlled demo command below to see
-metric results now.
+After a metric is chosen, normal mode uses the live 15-minute snapshots.
+Run the controlled demo command below if live sampling is unavailable.
 
 For an immediately runnable example without HF or PostgreSQL credentials, use
 `python -m examples.bedo_demo`. It sends the same requests through FastAPI's
@@ -151,32 +164,67 @@ records include `reason`. The example replays identical saved lock SQL for B2,
 B3, A1, and proposed, and an unsafe candidate. A2 makes no model or database
 call.
 
-## Database contract
+## PostgreSQL 17 setup and database contract
 
-Yusuf's view contract is not yet present in this repository. Until it arrives,
-run [`sql/001_lock_waits.sql`](sql/001_lock_waits.sql) as a trusted view owner
-on PostgreSQL 14 or newer (`pg_locks.waitstart` is required).
-It creates `diagnostics.lock_waits(waiting_pid integer, blocking_pid integer,
-wait_seconds integer)` using `pg_blocking_pids`, `pg_locks`, and
-`pg_stat_activity`. A DBA should provision a login role that can only connect
-and read this view, for example:
+The SQL scripts are installed in order: `001_lock_waits.sql`,
+`002_long_queries.sql`, `003_query_stats.sql`, `004_permissions.sql`.
+Run the following commands from the repository root. Start an isolated
+PostgreSQL 17 instance with `pg_stat_statements` preloaded:
 
-```sql
-CREATE ROLE lock_diagnostics_reader LOGIN PASSWORD '<generated password>';
-GRANT CONNECT ON DATABASE your_database TO lock_diagnostics_reader;
-GRANT USAGE ON SCHEMA diagnostics TO lock_diagnostics_reader;
-GRANT SELECT ON diagnostics.lock_waits TO lock_diagnostics_reader;
+```powershell
+docker run --rm -d --name diagnostics-live -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55432:5432 postgres:17-alpine -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all
+$env:TEST_POSTGRES_ADMIN_URL = 'postgresql://postgres@127.0.0.1:55432/postgres'
+@('001_lock_waits.sql','002_long_queries.sql','003_query_stats.sql','004_permissions.sql') | ForEach-Object {
+  Get-Content -Raw "api/sql/$_" | docker exec -i diagnostics-live psql -U postgres -d postgres -v ON_ERROR_STOP=1
+}
 ```
 
-Do not grant base table access or write privileges to that role. The API also
-sets the PostgreSQL transaction to read only and applies a local 3-second
-statement timeout. The model's output is parsed with SQLGlot and must be a
-single `SELECT` of exactly the selected catalog columns from the selected
-view. The API sends its own fixed statement to PostgreSQL after validation.
+Run scripts in **every target database** as a trusted owner. `004_permissions.sql`
+creates `diagnostics_operator_reader`, `diagnostics_viewer_reader`, and
+`diagnostics_sampler` NOLOGIN roles. Create separate LOGIN roles and grant
+one membership each; use their connection URLs for
+`DIAGNOSTICS_DATABASE_URL`, `DIAGNOSTICS_VIEWER_DATABASE_URL`, and
+`DIAGNOSTICS_SAMPLER_DATABASE_URL`. The operator role can read all three views;
+the owner-controlled `current_long_queries()` function reads activity for the
+view without granting broad `pg_read_all_stats` membership. The viewer
+can read only the aggregate `query_stats` and health views. Direct table and
+`pg_stat_statements` access is revoked from both reader roles. The sampler can
+only execute the snapshot function. Avoid reusing an administrator URL for the API.
+The permission script also revokes `PUBLIC` access to `pg_stat_statements` in
+that database; grant it explicitly to any existing monitoring accounts that
+need it.
 
-When Yusuf provides the final view, coordinate its name, columns, value types,
-and privileges before replacing the temporary contract. Bedo can consume the
-response shape above now.
+For each target database, create separate logins with generated passwords:
+
+```sql
+CREATE ROLE diagnostics_operator LOGIN PASSWORD '<generated operator password>';
+CREATE ROLE diagnostics_viewer LOGIN PASSWORD '<generated viewer password>';
+CREATE ROLE diagnostics_capture LOGIN PASSWORD '<generated sampler password>';
+GRANT diagnostics_operator_reader TO diagnostics_operator;
+GRANT diagnostics_viewer_reader TO diagnostics_viewer;
+GRANT diagnostics_sampler TO diagnostics_capture;
+REVOKE CONNECT ON DATABASE your_database FROM PUBLIC;
+GRANT CONNECT ON DATABASE your_database TO diagnostics_operator, diagnostics_viewer, diagnostics_capture;
+```
+
+Take a snapshot at least every minute; the health view selects a current capture
+and a baseline 15–17 minutes older. This PowerShell command captures 16 times at
+60-second intervals using the restricted sampler connection:
+
+```powershell
+$env:DIAGNOSTICS_SAMPLER_DATABASE_URL = 'postgresql://diagnostics_capture:<password>@127.0.0.1:55432/postgres'
+& 'api/scripts/capture-stats.ps1' -Python 'api/.venv/Scripts/python.exe' -Count 16 -IntervalSeconds 60
+```
+
+`diagnostics.lock_waits` keeps the existing PID/seconds contract scoped to the
+connected database. `diagnostics.long_queries` reports active client sessions
+in that database, excluding the requesting session; API threshold filtering is
+strict (`duration_seconds > threshold`). `diagnostics.query_stats` derives calls,
+total milliseconds, and mean milliseconds from cumulative counter differences
+over the latest valid 15-minute capture pair. It exposes no query text. PostgreSQL
+counter reset/deallocation or declining counters yield `insufficient_data`.
+The API sets every query transaction to read only with a local 3-second timeout.
+SQLGlot accepts only the single approved view projection and executes fixed SQL.
 
 ## Tests
 
@@ -190,8 +238,14 @@ The controlled tests cover the original authentication, lock, SQL guard,
 and adapter checks plus Turkish intent/role selection, B2/B3/A1/proposed
 prompts and API calls, cost clarification and metric ranking, demo-only rows,
 normal-mode unavailability, and A2 replay. They do not contact Hugging Face or
-PostgreSQL. Live Hugging Face inference remains untested when no token/model is
-configured.
+PostgreSQL. The separate PostgreSQL integration test exercises the three views,
+API roles, direct SQL permissions, 10+ second active query, actual lock wait,
+statistics ranking, insufficient history, and counter invalidation:
+
+```powershell
+$env:TEST_POSTGRES_ADMIN_URL = 'postgresql://postgres@127.0.0.1:55432/postgres'
+.\.venv\Scripts\python.exe -m pytest integration -q
+```
 
 The two-database PostgreSQL regression test is separate from the controlled
 tests. Run it against an isolated PostgreSQL 14+ instance with a role that can
