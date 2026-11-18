@@ -1,0 +1,7 @@
+api/.venv/
+api/.pilot/
+**/__pycache__/
+.pytest_cache/
+ui/node_modules/
+ui/dist/
+evaluation/output/
