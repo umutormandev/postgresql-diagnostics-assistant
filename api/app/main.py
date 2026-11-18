@@ -13,7 +13,8 @@ from .catalog import (
     FIXTURE_ROWS, needs_cost_clarification, requested_limits, resolve_cost_metric, select_schema,
 )
 from .services import (
-    DatabasePermissionDenied, ServiceUnavailable, fetch_lock_waits, generate_method_sql,
+    DatabasePermissionDenied, ServiceUnavailable, fetch_live_diagnostic,
+    fetch_lock_waits, generate_method_sql,
 )
 from .sql_guard import UnsafeSQL, validate_candidate_sql
 
@@ -63,7 +64,15 @@ def diagnose(
         )
 
     fixtures = getattr(request.app.state, "controlled_fixture", None)
-    if not schema.live and fixtures is None and os.getenv("DIAGNOSTICS_DEMO_MODE") != "1":
+    demo = os.getenv("DIAGNOSTICS_DEMO_MODE") == "1"
+    use_controlled = fixtures is not None or (demo and schema.intent != "lock_waits")
+    database_variable = (
+        "DIAGNOSTICS_VIEWER_DATABASE_URL" if role == "viewer"
+        else "DIAGNOSTICS_DATABASE_URL"
+    )
+    if schema.intent != "lock_waits" and not use_controlled and (
+        not schema.live or not os.getenv(database_variable)
+    ):
         return JSONResponse(status_code=503, content={
             "status": "unavailable", "intent": schema.intent, "rows": [],
             "source": "unavailable",
@@ -71,9 +80,10 @@ def diagnose(
         })
 
     threshold, window, count = requested_limits(payload.question, schema)
-    if window not in (None, 15) and not schema.live:
+    if window not in (None, 15):
         return DiagnoseResponse(
-            status="insufficient_data", intent=schema.intent, rows=[], source="controlled_fixture",
+            status="insufficient_data", intent=schema.intent, rows=[],
+            source="controlled_fixture" if use_controlled else schema.source,
             window_minutes=window,
         )
 
@@ -92,10 +102,13 @@ def diagnose(
         ) from exc
 
     source = schema.source
-    if schema.live and fixtures is None:
+    if schema.live and not use_controlled:
         started = perf_counter()
         try:
-            rows = fetch_lock_waits(sql)
+            rows = (
+                fetch_lock_waits(sql) if schema.intent == "lock_waits"
+                else fetch_live_diagnostic(sql, schema.intent, role)
+            )
         except DatabasePermissionDenied as exc:
             raise HTTPException(
                 status_code=403, detail="forbidden",
@@ -106,6 +119,11 @@ def diagnose(
                 status_code=503, detail=str(exc), headers={"X-Diagnostics-Stage": "database"}
             ) from exc
         response.headers["Server-Timing"] = f"db;dur={(perf_counter() - started) * 1000:.3f}"
+        if rows is None:
+            return DiagnoseResponse(
+                status="insufficient_data", intent=schema.intent, rows=[],
+                source=source, window_minutes=15,
+            )
     else:
         rows = [dict(row) for row in (fixtures if fixtures is not None else FIXTURE_ROWS)[schema.intent]]
         source = "controlled_fixture"
@@ -117,5 +135,5 @@ def diagnose(
 
     return DiagnoseResponse(
         intent=schema.intent, rows=rows, source=source, threshold_seconds=threshold,
-        window_minutes=(window or 15) if schema.intent == "query_stats" and not schema.live else window,
+        window_minutes=(window or 15) if schema.intent == "query_stats" else window,
     )

@@ -50,19 +50,65 @@ varsa istatistiksel karşılaştırmayı içerir. `a2.json` aynı etiketli aday
 listesinde çevrimdışı doğrulayıcının verdiği kararları içerir. A2, kayıtları SQL
 olarak çalıştırmaz.
 
-## Canlı Karşılaştırma
+## Canlı Karşılaştırma (PostgreSQL 17)
 
-Yusuf'un dört veri ve iş yükü koşulunda aynı şema ve yetkilerle hazırladığı
-API adreslerini bir JSON nesnesinde `D1-W1`, `D1-W2`, `D2-W1`, `D2-W2`
-anahtarlarına bağlayın. Beklenen satırları PostgreSQL'den bağımsız referans
-sorgularıyla doğrulayıp sentetik vaka dosyasıyla aynı biçimde yeni bir JSONL
-olarak kaydedin. Canlı kayıtlarda `environment` alanı `live` olmalı.
-İstemcinin kullanacağı imzalı anahtarları `DIAGNOSTICS_OPERATOR_JWT` ve
-`DIAGNOSTICS_VIEWER_JWT` ortam değişkenlerine koyun. Her hedef sunucu,
-aynı anahtarları doğrulayacak biçimde ve aynı modelle yapılandırılmalı.
+Depo kökünden çalıştırın. [API SQL kurulumunu](../api/README.md) kullanan
+`evaluation.live_lab`, dört ayrı veritabanını oluşturur: `D1` 100 ürüne dengeli
+dağıtılmış 10.000 sipariş, `D2` siparişlerin %80'i ilk beş üründe yoğunlaşan
+10.000 sipariş; `W1` katalog/sipariş sorguları, `W2` rapor toplamaları ve
+eşzamanlı oturumlar. `D1-W2` dışında gerçek bir kilit beklemesi tutulur; her
+koşulda uzun bir rapor sorgusu çalışır. `evaluation/output/` içindeki bağlantı
+bilgileri ve anahtarlar yerel ve Git tarafından yok sayılır.
+Her koşulun operatör, izleyici ve örnekleyici girişleri ayrı rastgele parolalar
+alır. `POSTGRES_HOST_AUTH_METHOD=trust` yalnızca bu tek kullanımlık yerel
+container örneği içindir; paylaşılan sunucuda parola doğrulamasını etkinleştirin.
 
 ```powershell
-.\api\.venv\Scripts\python.exe -m evaluation.run --targets evaluation/output/targets.json --cases evaluation/output/live_cases.jsonl --model "qwen2.5-coder:3b (<model digest ve Ollama sürümü>)" --output evaluation/output/live.jsonl
+docker run --rm -d --name diagnostics-live -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55432:5432 postgres:17-alpine -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all
+$env:TEST_POSTGRES_ADMIN_URL = 'postgresql://postgres@127.0.0.1:55432/postgres'
+& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab setup
+& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab capture
+& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab workload --repetitions 100
+```
+
+İkinci terminalde `& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab hold`
+komutunu açık tutun. Üçüncü terminalde
+`& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab sample-loop`
+komutunu, dördüncü terminalde
+`& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab workload-loop --repetitions 100`
+komutunu açık tutun. Dört veritabanında her dakika anlık görüntü ve iş yükü
+oluşur. İlk
+yakalamadan **en az 15 dakika sonra** `references` çalıştırın. Sağlık görünümü
+yalnızca son iki dakikadaki anlık görüntüyü kabul eder.
+`references` komutu API görünümleri yerine doğrudan `pg_stat_activity`,
+`pg_blocking_pids` ve kaydedilmiş ham sayaç çiftlerini sorgular. Aynı 48
+soruyu `evaluation/output/live_cases.jsonl` dosyasına gerçek PID'ler ve
+queryid'lerle yazar. Süreler hareketli olduğu için uzun sorgu eşleşmesinde
+PID ve sorgu metni, kilitte iki PID karşılaştırılır. İstatistik sayaçları
+örnekleme sırasında büyüdüğünden sıralanmış queryid'ler karşılaştırılır;
+referans dosyası yakalama anındaki tüm sayısal alanları ayrıca saklar.
+
+```powershell
+& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab capture
+& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab references
+$env:DIAGNOSTICS_MODEL_PROVIDER = 'ollama'
+$env:OLLAMA_MODEL = 'qwen2.5-coder:3b'
+$env:OLLAMA_BASE_URL = 'http://127.0.0.1:11434'
+& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab tokens | Invoke-Expression
+```
+
+Başka bir terminalde aynı üç model değişkenini ayarlayıp
+`& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab serve` komutunu açık
+tutun. Dört API adresi `evaluation/output/targets.json` dosyasına yazılır.
+`serve` tüm sunuculara aynı model ayarlarını ve imza anahtarını verir.
+
+Önce küçük koşuda beş yöntemin tamamını deneyin. Ardından ortam sağlıklıysa
+tam koşuyu çalıştırın:
+
+```powershell
+& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab smoke-case
+& 'api/.venv/Scripts/python.exe' -m evaluation.run --targets evaluation/output/targets.json --cases evaluation/output/small_cases.jsonl --repetitions 1 --model 'qwen2.5-coder:3b f72c60cabf6237b07f6e632b2c48d533cef25eda2efbd34bed21c5e9c01e6225' --output evaluation/output/small.jsonl
+.\api\.venv\Scripts\python.exe -m evaluation.run --targets evaluation/output/targets.json --cases evaluation/output/live_cases.jsonl --live-reference-config evaluation/output/live_lab.json --model "qwen2.5-coder:3b (<model digest ve Ollama sürümü>)" --output evaluation/output/live.jsonl
 .\api\.venv\Scripts\python.exe -m evaluation.report evaluation/output/live.jsonl --output-dir evaluation/output/live-summary
 ```
 
@@ -70,6 +116,31 @@ Koşu varsayılan olarak her vakayı beş yöntemle üç defa, kaydedilen tohuml
 karıştırarak çağırır. Belirsiz sorularda önceden sabitlenmiş ölçütü ikinci
 çağrıda gönderir ve iki çağrının gecikmesini toplar. DB süresi API'nin
 `Server-Timing` başlığından, API gecikmesi ise ölçüm istemcisinden alınır.
+İstatistik sıralaması örnekleme boyunca değişebildiği için canlı koşucu, her
+istatistik isteğinin hemen öncesinde ve sonrasında bağımsız ham sayaç sorgusunu
+tekrarlar; yanıt bu iki yakalamadan biriyle eşleşirse doğru sayılır. Her iki
+referansın batch ID'si ham ölçüm kaydına eklenir.
+Yerel PostgreSQL kısa süreli erişilemezse `sample-loop` hatayı kaydedip sonraki
+dakikada tekrar dener. `insufficient_data` olan ölçümler altyapı hatası sayılır.
+Kesilen koşuyu, sağlıklı pencere geri geldikten sonra yalnızca geçerli kayıtları
+yeniden kullanarak tamamlamak için farklı bir çıktı dosyası verin:
+
+```powershell
+& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab refresh-activity
+& 'api/.venv/Scripts/python.exe' -m evaluation.run --targets evaluation/output/targets.json --cases evaluation/output/live_cases.jsonl --live-reference-config evaluation/output/live_lab.json --resume-from evaluation/output/live.jsonl --model 'qwen2.5-coder:3b (<model digest ve Ollama sürümü>)' --output evaluation/output/live-resumed.jsonl
+```
+
+`refresh-activity`, oturum tutucuları yeniden başlatıldıysa yeni PID'leri
+bağımsız PostgreSQL sorgularıyla günceller. Raporu yalnızca 720 kayıtlık tamamlanmış
+dosyada çalıştırın.
+İstatistik penceresi yeniden oluşurken diğer teşhisleri tamamlamak için
+`--exclude-intents query_stats` kullanabilirsiniz; daha sonra birden çok
+`--resume-from` dosyasını sırayla vererek tamamlanmış ölçümleri birleştirin.
+Doğrulayıcı tarafından reddedilen veya yanlış yanıtlanan izinli vakalar geçerli
+deney sonuçlarıdır ve `--resume-from` bunları yeniden çalıştırmaz; yalnızca
+taşıma/model/veritabanı kesintileri ile `insufficient_data` kayıtları tekrarlanır.
+Gerçekleştirilen 720 kayıtlık yerel koşunun ölçümleri
+[canlı sonuçlarda](live_run_results.md) yer alır.
 Model, veritabanı bağlantısı, oturum anahtarı ve taşıma hataları ham kayıtta
 görünür ve doğruluk paydasından çıkarılır. Önerilen yöntem ile B3 karşılaştırması,
 üç ölçümü tamamlanmış izinli vakalarda çoğunluk sonucuna dayanır.

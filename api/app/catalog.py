@@ -31,12 +31,12 @@ CATALOG = {
     "long_queries": Schema(
         "long_queries", "diagnostics.long_queries",
         ("pid", "duration_seconds", "query_text"),
-        ("operator",), "controlled_fixture", False,
+        ("operator",), "pg_stat_activity", True,
     ),
     "query_stats": Schema(
         "query_stats", "diagnostics.query_stats",
         ("queryid", "total_exec_time_ms", "mean_exec_time_ms", "calls"),
-        ("operator", "viewer"), "controlled_fixture", False,
+        ("operator", "viewer"), "pg_stat_statements snapshots", True,
     ),
 }
 

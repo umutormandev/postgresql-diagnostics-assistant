@@ -52,10 +52,20 @@ its own read-only projection. A2 replays the same labeled SQL candidates
 through the validator and records its authorization decisions offline.
 
 The benchmark uses equal questions, credentials and data for every method in
-each condition. The 48 prepared question cases are assigned to the four planned
-combinations of data distribution and workload. The live run will pair these
-conditions with verified PostgreSQL snapshots and run three repetitions per
-method.
+each condition. Four isolated PostgreSQL 17.12 databases with
+`pg_stat_statements` 1.11 contain 10,000 orders
+each. D1 distributes orders evenly across 100 products; D2 places 80% of orders
+on five products. W1 runs catalog and order lookups; W2 runs grouped reports
+with concurrent sessions. The 48 prepared questions are assigned to these four
+combinations. Expected lock and active-query rows come from independent
+`pg_stat_activity` and `pg_blocking_pids` queries; expected statistics rankings
+come from separately queried raw counter snapshots. Each method uses Ollama
+0.40.16 with `qwen2.5-coder:3b` (digest
+`f72c60cabf6237b07f6e632b2c48d533cef25eda2efbd34bed21c5e9c01e6225`)
+and the same API settings. Because the statistics window advances during
+the run, the expected query ranking is recalculated from raw snapshots just
+before and after each request; a ranking that matches either observation is
+accepted. The full live run uses three repetitions.
 Accuracy is measured against reference results obtained independently. The
 run also records clarification success, authorization outcomes, end-to-end
 latency and database call time. The planned primary comparison uses per-case
@@ -78,8 +88,33 @@ reference result, and all 36 forbidden observations were blocked. The
 controlled A2 list contained four authorized and four unauthorized candidates.
 The validator accepted the four authorized candidates and rejected the other
 four. These results measure the benchmark contract with synthetic snapshots.
-The live five-method table and paired significance test require the actual
-four workload conditions and their reference results.
+The completed live run contains 720 unique valid measurements: 48 questions,
+five methods, and three repetitions. Each of D1-W1, D1-W2, D2-W1, and D2-W2
+contributed 180 measurements. Each method saw 108 permitted and 36 denied
+requests. All 36 denied requests per method were blocked, with no unauthorized
+rows returned. Permitted-result accuracy and end-to-end latency were:
+
+| Method | Correct / permitted | Accuracy | Median latency (ms) | False blocks / permitted |
+| --- | ---: | ---: | ---: | ---: |
+| B1 | 108 / 108 | 100.00% | 22.92 | 0 / 108 |
+| B2 | 90 / 108 | 83.33% | 982.76 | 18 / 108 |
+| B3 | 87 / 108 | 80.56% | 1121.21 | 21 / 108 |
+| A1 | 91 / 108 | 84.26% | 1098.40 | 17 / 108 |
+| Proposed | 71 / 108 | 65.74% | 1128.66 | 37 / 108 |
+
+For the 36 matched permitted cases, majority outcomes favored B3 over the
+proposed method in six cases and favored the proposed method in none. The
+difference was -16.67 percentage points (paired 95% bootstrap interval -30.56
+to -5.56; exact McNemar p = 0.03125). The result is evidence against a benefit
+from the current dynamic schema prompt in this local pilot; it should not be
+generalized to other models or workloads.
+
+The local PostgreSQL connection and snapshot sampler had temporary gaps. We
+retained 420 valid non-statistics measurements and 274 valid statistics
+measurements, then reran only 26 invalid infrastructure observations when all
+four health views were ready. Wrong model answers and validator rejections
+were preserved as outcomes. The final 720-record file has no infrastructure
+exclusions. [Run summary](../evaluation/live_run_results.md)
 
 ## Discussion
 
