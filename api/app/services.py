@@ -159,3 +159,34 @@ def fetch_lock_waits(sql: str) -> list[dict]:
         raise DatabasePermissionDenied("PostgreSQL role denied the query") from exc
     except psycopg.Error as exc:
         raise ServiceUnavailable("PostgreSQL query failed") from exc
+
+
+def fetch_live_diagnostic(sql: str, intent: str, role: str) -> list[dict] | None:
+    """Return None only when the 15-minute statistics history is insufficient."""
+    variable = (
+        "DIAGNOSTICS_VIEWER_DATABASE_URL" if role == "viewer"
+        else "DIAGNOSTICS_DATABASE_URL"
+    )
+    database_url = os.getenv(variable)
+    if not database_url:
+        raise ServiceUnavailable("PostgreSQL is not configured")
+    try:
+        with psycopg.connect(
+            database_url, autocommit=True, connect_timeout=5, row_factory=dict_row
+        ) as connection:
+            connection.read_only = True
+            with connection.transaction():
+                connection.execute(
+                    "SELECT set_config('statement_timeout', %s, true)", ("3000ms",)
+                )
+                if intent == "query_stats":
+                    health = connection.execute(
+                        "SELECT sufficient FROM diagnostics.query_stats_health"
+                    ).fetchone()
+                    if health is None or not health["sufficient"]:
+                        return None
+                return connection.execute(sql).fetchall()
+    except psycopg.errors.InsufficientPrivilege as exc:
+        raise DatabasePermissionDenied("PostgreSQL role denied the query") from exc
+    except psycopg.Error as exc:
+        raise ServiceUnavailable("PostgreSQL query failed") from exc

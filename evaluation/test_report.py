@@ -1,8 +1,67 @@
 """Regression checks for paired analysis and Clarification scoring."""
 
 from evaluation.report import paired_comparison
-from evaluation.run import evaluate_case
+from evaluation.run import evaluate_case, reusable_record, row_matches, timed_request
 import httpx
+
+
+def test_live_rows_match_only_independent_stable_fields():
+    assert row_matches(
+        [{"pid": 42, "duration_seconds": 39.1, "query_text": "SELECT pg_sleep(90)"}],
+        [{"pid": 42, "query_text": "SELECT pg_sleep(90)"}], False,
+        ["pid", "query_text"],
+    )
+    assert not row_matches([{"pid": 43}], [{"pid": 42}], False, ["pid"])
+
+
+def test_live_statistics_accepts_independent_rank_before_or_after_capture():
+    ranks = iter(({"batch_id": 10, "queryids": [1]},
+                  {"batch_id": 11, "queryids": [2]}))
+
+    def send(condition, role, payload):
+        return httpx.Response(200, json={
+            "status": "ok", "intent": "query_stats", "rows": [{"queryid": 2}],
+        })
+
+    case = {"id": "moving", "kind": "clear", "dataset": "D1", "workload": "W1",
+            "environment": "live", "role": "viewer", "question": "Toplam süreye göre ilk sorgu",
+            "expected": {"http": 200, "intent": "query_stats", "rows": [{"queryid": 1}],
+                         "ordered": True, "match_fields": ["queryid"]}}
+    result = evaluate_case(send, case, "b1", 1, lambda _: next(ranks))
+    assert result["correct"] is True
+    assert result["reference_before"]["batch_id"] == 10
+    assert result["reference_after"]["batch_id"] == 11
+
+
+def test_insufficient_statistics_are_infrastructure_not_wrong_answer():
+    result = timed_request(
+        lambda *_: httpx.Response(200, json={"status": "insufficient_data", "rows": []}),
+        "D1-W1", "viewer", {"question": "istatistik"},
+    )
+    assert result["stage"] == "insufficient_data"
+
+
+def test_missing_live_references_exclude_measurement():
+    case = {"id": "missing", "kind": "clear", "dataset": "D1", "workload": "W1",
+            "environment": "live", "role": "viewer", "question": "Toplam süre",
+            "expected": {"http": 200, "intent": "query_stats", "rows": []}}
+    result = evaluate_case(
+        lambda *_: httpx.Response(200, json={"status": "insufficient_data", "rows": []}),
+        case, "b1", 1, lambda _: {"batch_id": None, "queryids": [], "unavailable": True},
+    )
+    assert result["correct"] is None
+
+
+def test_resume_preserves_wrong_model_answers_but_retries_infrastructure():
+    assert reusable_record({"correct": False, "attempts": [{
+        "stage": "validator", "body": {"detail": "Model SQL is not allowed"},
+    }]})
+    assert not reusable_record({"correct": None, "attempts": [{
+        "stage": "database", "body": {},
+    }]})
+    assert not reusable_record({"correct": False, "attempts": [{
+        "body": {"status": "insufficient_data"},
+    }]})
 
 
 def test_compares_case_majorities_instead_of_counting_repeats_as_cases():
