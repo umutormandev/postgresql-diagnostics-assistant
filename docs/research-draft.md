@@ -130,6 +130,33 @@ four health views were ready. Wrong model answers and validator rejections
 were preserved as outcomes. The final 720-record file has no infrastructure
 exclusions. [Run summary](../evaluation/live_run_results.md)
 
+### Additional live experiments
+
+The 48-case rerun has 720 valid measurements of 720 with full-field grading.
+
+| Method | Correct / permitted | Median API ms | P95 API ms | Expected permission denial |
+| --- | ---: | ---: | ---: | ---: |
+| B1 | 108 / 108 | 10.46 | 18.45 | 36 / 36 |
+| B2 | 87 / 108 | 1528.68 | 3355.06 | 36 / 36 |
+| B3 | 87 / 108 | 1693.04 | 3471.91 | 36 / 36 |
+| A1 | 90 / 108 | 1576.31 | 2995.04 | 36 / 36 |
+| Proposed | 75 / 108 | 1508.90 | 2933.02 | 36 / 36 |
+
+[Detailed results, role summaries and paired tests](../evaluation/evidence/rerun-summary.md).
+
+The 12-case evaluation of additional wording has 72 valid measurements of 72 with full-field grading.
+
+| Method | Correct / permitted | Median API ms | P95 API ms | Expected permission denial |
+| --- | ---: | ---: | ---: | ---: |
+| B1 | 21 / 30 | 9.57 | 16.62 | 3 / 6 |
+| Proposed | 9 / 30 | 1128.00 | 3338.35 | 3 / 6 |
+
+[Detailed results, role summaries and paired tests](../evaluation/evidence/followup-summary.md).
+
+The two live evaluations report their results separately from the original run. Timing comparisons apply within each run.
+
+[Shareable evidence and report commands](../evaluation/evidence/README.md).
+
 ## Discussion
 
 B1 had the highest original live accuracy and lowest API latency. Its result
@@ -158,7 +185,7 @@ rules and retain separate results.
 PostgreSQL 17 Documentation. <https://www.postgresql.org/docs/17/monitoring-stats.html>
 
 [2] N. Stratica, L. Kosseim, and B. C. Desai, “Using semantic templates for a
-natural language interface to databases,” Data & Knowledge Engineering,
+natural language interface to the CINDI virtual library,” Data & Knowledge Engineering,
 vol. 55, pp. 4–19, 2005. <https://doi.org/10.1016/j.datak.2004.12.002>
 
 [3] D. Gao et al., “Text-to-SQL empowered by large language models: A benchmark
@@ -171,7 +198,7 @@ in Findings of EACL, 2026, pp. 4516–4546.
 <https://doi.org/10.18653/v1/2026.findings-eacl.236>
 
 [5] R. Zhong, T. Yu, and D. Klein, “Semantic evaluation for Text-to-SQL with
-distilled test suites,” in Proc. EMNLP, 2020.
+distilled test suites,” in Proc. EMNLP, 2020, pp. 396–411.
 <https://aclanthology.org/2020.emnlp-main.29/>
 
 ## Demo Akışı

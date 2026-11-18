@@ -142,6 +142,7 @@ Doğrulayıcı tarafından reddedilen veya yanlış yanıtlanan izinli vakalar g
 deney sonuçlarıdır ve `--resume-from` bunları yeniden çalıştırmaz; yalnızca
 taşıma/model/veritabanı kesintileri ile `insufficient_data` kayıtları tekrarlanır.
 İlk 720 kayıtlık koşunun özeti [canlı sonuçlarda](live_run_results.md).
+Yeni koşuların [ölçümleri ve raporları](evidence/README.md) yayımlanmıştır.
 İlk koşu sorgu istatistiklerini sıralı kimlik üzerinden değerlendirdi.
 Güncel koşucunun ölçüm meta verisi `live-stat-values-v2` olarak kaydedilir.
 Model, veritabanı bağlantısı, oturum anahtarı ve taşıma hataları ham kayıtta
