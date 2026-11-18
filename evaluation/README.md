@@ -18,7 +18,7 @@ npm --prefix ui run dev
 ```
 
 Vite'ın gösterdiği adresi açın. İlk terminaldeki geçici **operator** anahtarını
-oturum anahtarı alanına girin ve **B1 · SQL şablonları** yöntemini seçin. Sentetik
+oturum anahtarı alanına girin. Varsayılan yöntem **B1 · SQL şablonları**dır. Sentetik
 demo üç teşhisin de veri kaynağını arayüzde etiketler. **viewer** anahtarıyla
 kilit sorgusu yetki bildirimi döndürür, sorgu istatistikleri ise kullanılabilir.
 
@@ -84,9 +84,10 @@ yalnızca son iki dakikadaki anlık görüntüyü kabul eder.
 `pg_blocking_pids` ve kaydedilmiş ham sayaç çiftlerini sorgular. Aynı 48
 soruyu `evaluation/output/live_cases.jsonl` dosyasına gerçek PID'ler ve
 queryid'lerle yazar. Süreler hareketli olduğu için uzun sorgu eşleşmesinde
-PID ve sorgu metni, kilitte iki PID karşılaştırılır. İstatistik sayaçları
-örnekleme sırasında büyüdüğünden sıralanmış queryid'ler karşılaştırılır;
-referans dosyası yakalama anındaki tüm sayısal alanları ayrıca saklar.
+PID ve sorgu metni, kilitte iki PID karşılaştırılır. İstatistiklerde her satırın
+sırası, sorgu kimliği, çağrı sayısı, toplam süresi ve ortalama süresi birlikte
+eşleşmelidir. Kimlikler tam duyarlıkla metin olarak döner. Süreler için mutlak
+tolerans 0,001 ms'dir.
 
 ```powershell
 & 'api/.venv/Scripts/python.exe' -m evaluation.live_lab capture
@@ -118,8 +119,9 @@ karıştırarak çağırır. Belirsiz sorularda önceden sabitlenmiş ölçütü
 `Server-Timing` başlığından, API gecikmesi ise ölçüm istemcisinden alınır.
 İstatistik sıralaması örnekleme boyunca değişebildiği için canlı koşucu, her
 istatistik isteğinin hemen öncesinde ve sonrasında bağımsız ham sayaç sorgusunu
-tekrarlar; yanıt bu iki yakalamadan biriyle eşleşirse doğru sayılır. Her iki
-referansın batch ID'si ham ölçüm kaydına eklenir.
+tekrarlar. Bütün yanıt, önceki veya sonraki yakalamanın tek bir eksiksiz
+sonucuyla eşleşirse doğru sayılır. Her iki referansın örnek kimlikleri ölçüm
+kaydına eklenir.
 Yerel PostgreSQL kısa süreli erişilemezse `sample-loop` hatayı kaydedip sonraki
 dakikada tekrar dener. `insufficient_data` olan ölçümler altyapı hatası sayılır.
 Kesilen koşuyu, sağlıklı pencere geri geldikten sonra yalnızca geçerli kayıtları
@@ -139,11 +141,32 @@ dosyada çalıştırın.
 Doğrulayıcı tarafından reddedilen veya yanlış yanıtlanan izinli vakalar geçerli
 deney sonuçlarıdır ve `--resume-from` bunları yeniden çalıştırmaz; yalnızca
 taşıma/model/veritabanı kesintileri ile `insufficient_data` kayıtları tekrarlanır.
-Gerçekleştirilen 720 kayıtlık yerel koşunun ölçümleri
-[canlı sonuçlarda](live_run_results.md) yer alır.
+İlk 720 kayıtlık koşunun özeti [canlı sonuçlarda](live_run_results.md).
+Yeni koşuların [ölçümleri ve raporları](evidence/README.md) yayımlanmıştır.
+İlk koşu sorgu istatistiklerini sıralı kimlik üzerinden değerlendirdi.
+Güncel koşucunun ölçüm meta verisi `live-stat-values-v2` olarak kaydedilir.
 Model, veritabanı bağlantısı, oturum anahtarı ve taşıma hataları ham kayıtta
 görünür ve doğruluk paydasından çıkarılır. Önerilen yöntem ile B3 karşılaştırması,
 üç ölçümü tamamlanmış izinli vakalarda çoğunluk sonucuna dayanır.
+Rapor `summary.csv` dosyasındaki `role-operator` ve `role-viewer`
+satırlarında A1 ve Proposed dâhil her yöntemi ayrı gösterir.
+
+### Yeni sorularla kontrol ve paylaşılabilir deney verisi
+
+`followup_cases.jsonl`, aynı dört koşulda farklı ifadeler kullanan 12 ek vaka
+içerir. B1 ve Proposed yöntemlerini ilk deneyden bağımsız bir tabloda raporlayın.
+
+```powershell
+& 'api/.venv/Scripts/python.exe' -m evaluation.live_lab references --cases evaluation/followup_cases.jsonl --references-output evaluation/output/followup_live_cases.jsonl
+& 'api/.venv/Scripts/python.exe' -m evaluation.run --targets evaluation/output/targets.json --cases evaluation/output/followup_live_cases.jsonl --live-reference-config evaluation/output/live_lab.json --methods b1 proposed --model 'qwen2.5-coder:3b (<model digest ve Ollama sürümü>)' --output evaluation/output/followup.jsonl
+& 'api/.venv/Scripts/python.exe' -m evaluation.export_evidence evaluation/output/followup.jsonl evaluation/output/followup_live_cases.jsonl evaluation/output/followup-evidence
+& 'api/.venv/Scripts/python.exe' -m evaluation.report evaluation/output/followup-evidence/measurements.jsonl --output-dir evaluation/output/followup-summary
+```
+
+Tam deney için aynı dışa aktarma komutuna 720 kaydın dosyasını ve ilgili
+`live_cases.jsonl` dosyasını verin. Araç vaka, yöntem ve tekrar kombinasyonlarını
+doğrular. Seçili sonuç alanları, vakalar, ölçüm meta verisi ve SHA-256 kayıtları
+ile yeniden raporlamak mümkündür. Sorgu metni özeti alınarak yayımlanır.
 
 Veritabanı planlama ve yürütme sürelerini ayrı kaydetmek için, salt okunur
 `DIAGNOSTICS_DATABASE_URL` ayarlı ortamda aşağıdaki komutu çalıştırın. Bu ölçüm

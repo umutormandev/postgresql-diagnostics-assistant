@@ -25,6 +25,17 @@ const statusText = {
 const identifiers = new Set(['waiting_pid', 'blocking_pid', 'pid', 'queryid']);
 const number = new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 3 });
 
+function explainResult(data) {
+  const count = number.format(data.rows.length);
+  if (data.intent === 'lock_waits') {
+    return count + ' bekleyen–engelleyen oturum çifti bulundu.';
+  }
+  if (data.intent === 'long_queries') {
+    return count + ' aktif sorgu, ' + number.format(data.threshold_seconds) + ' saniyelik eşiği aşıyor.';
+  }
+  return 'Son ' + number.format(data.window_minutes) + ' dakikanın en yüksek maliyetli ' + count + ' sorgusu sıralandı.';
+}
+
 function Results({ result, busy, onMetric }) {
   const { data, elapsed } = result || {};
   const listed = data ? columns[data.intent] || [] : [];
@@ -48,18 +59,18 @@ function Results({ result, busy, onMetric }) {
       </div>}
       {!busy && data?.status === 'insufficient_data' && <p className="notice">Bu zaman aralığı için yeterli ölçüm kaydı yok.</p>}
       {!busy && data?.status === 'ok' && <>
-        {data.rows.length ? <div className="table-wrap"><table>
+        {data.rows.length ? <>
+        <p className="muted">{explainResult(data)}</p>
+        <div className="table-wrap"><table>
           <thead><tr>{listed.map(([key, name]) => <th scope="col" key={key}>{name}</th>)}</tr></thead>
           <tbody>{data.rows.map((row, index) => <tr key={index}>
             {listed.map(([key]) => <td key={key}>
               {typeof row[key] === 'number' && !identifiers.has(key) ? number.format(row[key]) : (row[key] ?? '—')}
             </td>)}
           </tr>)}</tbody>
-        </table></div> : <div className="empty"><strong>Eşleşen kayıt yok</strong></div>}
+        </table></div></> : <div className="empty"><strong>Eşleşen kayıt yok</strong></div>}
         <div className="source">
           <span className="source-label">{data.source === 'controlled_fixture' ? 'Sentetik demo verisi' : 'Kaynak: ' + data.source}</span>
-          {data.window_minutes != null && <span>Son {data.window_minutes} dakika</span>}
-          {data.threshold_seconds != null && <span>{data.threshold_seconds} saniyenin üzeri</span>}
         </div>
       </>}
     </div>
@@ -68,7 +79,7 @@ function Results({ result, busy, onMetric }) {
 
 function App() {
   const [question, setQuestion] = useState('');
-  const [method, setMethod] = useState('proposed');
+  const [method, setMethod] = useState('b1');
   const [token, setToken] = useState('');
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -119,8 +130,8 @@ function App() {
             <div className="field">
               <label htmlFor="method">Yöntem</label>
               <select id="method" disabled={busy} value={method} onChange={event => setMethod(event.target.value)}>
-                <option value="proposed">Önerilen yöntem</option>
                 <option value="b1">B1 · SQL şablonları</option>
+                <option value="proposed">Önerilen yöntem</option>
                 <option value="b2">B2 · Zero-shot</option>
                 <option value="b3">B3 · Few-shot</option>
                 <option value="a1">A1 · Sabit şema</option>

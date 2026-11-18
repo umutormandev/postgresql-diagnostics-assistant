@@ -6,6 +6,7 @@ from collections.abc import Callable
 from contextlib import ExitStack
 from datetime import datetime, timezone
 import json
+from math import isclose
 import os
 from pathlib import Path
 import platform
@@ -21,6 +22,7 @@ from .fixtures import CASES, ROLES, load_snapshots, signed_test_token
 
 
 METHODS = ("b1", "b2", "b3", "proposed", "a1")
+STAT_TIME_FIELDS = ("total_exec_time_ms", "mean_exec_time_ms")
 Send = Callable[[str, str, dict], httpx.Response]
 
 
@@ -66,9 +68,14 @@ def timed_request(send: Send, condition: str, role: str, payload: dict) -> dict:
 
 def row_matches(actual: list, expected: list, ordered: bool,
                 match_fields: list[str] | None = None) -> bool:
+    if not isinstance(actual, list) or not isinstance(expected, list):
+        return False
+    if any(not isinstance(row, dict) for row in actual + expected):
+        return False
+    actual = [normalize_queryid(row) for row in actual]
+    expected = [normalize_queryid(row) for row in expected]
     if match_fields is not None:
-        if any(not isinstance(row, dict) or any(key not in row for key in match_fields)
-               for row in actual + expected):
+        if any(any(key not in row for key in match_fields) for row in actual + expected):
             return False
         actual = [{key: row[key] for key in match_fields} for row in actual]
         expected = [{key: row[key] for key in match_fields} for row in expected]
@@ -79,6 +86,20 @@ def row_matches(actual: list, expected: list, ordered: bool,
             tuple(sorted(row.items())) for row in expected
         )
     except (AttributeError, TypeError):
+        return False
+
+
+def normalize_queryid(row: dict) -> dict:
+    return {**row, "queryid": str(row["queryid"])} if "queryid" in row else row
+
+
+def statistic_rows_match(actual: object, expected: list[dict]) -> bool:
+    if not row_matches(actual, expected, ordered=True, match_fields=["queryid", "calls"]):
+        return False
+    try:
+        return all(isclose(row[field], reference[field], rel_tol=0, abs_tol=0.001)
+                   for row, reference in zip(actual, expected) for field in STAT_TIME_FIELDS)
+    except (KeyError, TypeError):
         return False
 
 
@@ -119,18 +140,21 @@ def evaluate_case(send: Send, case: dict, method: str, repetition: int,
                                   "unavailable", "insufficient_data")
                 for item in attempts)
     available_references = ([item for item in (reference_before, reference_after)
-                             if item is not None and not item.get("unavailable")]
+                             if item is not None and isinstance(item.get("rows"), list)
+                             and not item.get("unavailable")]
                             if dynamic_stats else [])
     if dynamic_stats and not available_references:
         infra = True
+    unauthorized_data = expected["http"] == 403 and any(
+        bool(item["body"].get("rows")) for item in attempts
+    )
     if expected["http"] == 403:
-        correct = last["http"] == 403
+        correct = last["http"] == 403 and not unauthorized_data
     else:
         matched_rows = row_matches(actual.get("rows", []), expected["rows"],
                                    expected.get("ordered", False), expected.get("match_fields"))
-        if dynamic_stats and isinstance(actual.get("rows"), list):
-            actual_ids = [row.get("queryid") for row in actual["rows"]]
-            matched_rows = any(actual_ids == item["queryids"]
+        if dynamic_stats:
+            matched_rows = any(statistic_rows_match(actual.get("rows"), item["rows"])
                                for item in available_references)
         correct = (
             last["http"] == expected["http"] and actual.get("status") == expected.get("status", "ok")
@@ -146,9 +170,7 @@ def evaluate_case(send: Send, case: dict, method: str, repetition: int,
         "environment": case["environment"], "method": method, "repetition": repetition,
         "correct": None if infra else correct, "clarification_correct": None if infra else clarified,
         "denied": last["http"] == 403, "denial_stage": last["stage"],
-        "unauthorized_data": expected["http"] == 403 and any(
-            bool(item["body"].get("rows")) for item in attempts
-        ),
+        "unauthorized_data": unauthorized_data,
         "api_ms": sum(item["api_ms"] for item in attempts),
         "db_ms": sum(db_times) if db_times else None,
         "attempts": attempts,
@@ -202,12 +224,19 @@ def main() -> None:
         parser.error("Resume is only supported for live runs")
     if not args.fixture and any(method != "b1" for method in methods) and not args.model:
         parser.error("Provide --model with the live LLM model and version")
+    scoring = "live-stat-values-v2" if args.live_reference_config else "case-fields-v1"
 
     with ExitStack() as stack:
         live_reference = None
         existing = {}
         if args.resume_from:
             for previous in args.resume_from:
+                resume_meta = previous.with_suffix(".meta.json")
+                if not resume_meta.exists():
+                    parser.error(f"Missing metadata for {previous}")
+                prior = json.loads(resume_meta.read_text(encoding="utf-8"))
+                if prior.get("scoring") != scoring or prior.get("model") != args.model:
+                    parser.error(f"Scoring rule or model differs in {previous}")
                 for line in previous.read_text(encoding="utf-8").splitlines():
                     if not line.strip():
                         continue
@@ -257,7 +286,8 @@ def main() -> None:
         metadata = {
             "environment": environment, "cases": str(args.cases), "case_count": len(cases),
             "methods": methods, "repetitions": args.repetitions, "seed": args.seed,
-            "model": args.model, "platform": platform.platform(), "python": platform.python_version(),
+            "model": args.model, "scoring": scoring,
+            "platform": platform.platform(), "python": platform.python_version(),
             "live_reference_config": str(args.live_reference_config) if args.live_reference_config else None,
             "resume_from": [str(path) for path in args.resume_from] if args.resume_from else None,
             "reused_measurements": len(existing),

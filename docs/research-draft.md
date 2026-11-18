@@ -1,16 +1,19 @@
 # A Read-Only Natural-Language Assistant for PostgreSQL Diagnostics
 
+**Umut Orman · Sami Yusuf Özdemir · Bedirhan Bozkurt**
+
+Department of Computer Engineering, Doğuş University · COME 381 · Fall 2026
+
 ## Abstract
 
-This project develops a read-only assistant for PostgreSQL diagnostic questions
-in Turkish. The prototype routes requests to approved views and combines role
-checks with SQL validation and controlled execution. In a live lock pilot,
-four model prompt variants identified the same process pair while a lock was
-held and returned empty results after release. In a separate synthetic API
-verification, B1 matched 108 permitted results and rejected 36 requests marked
-outside its permissions. These preliminary observations establish feasibility.
-The complete live workload experiment will estimate differences in accuracy,
-blocking and latency across methods.
+We evaluated a Turkish-language PostgreSQL assistant for lock waits, long-running
+queries, and statement cost. The system checks role permissions, validates model
+candidates, and runs a restricted diagnostic query. In the first live experiment
+with 48 cases, four workload conditions, five methods, and three repeats, the SQL
+template baseline B1 matched all 108 permitted measurements at a median API
+latency of 22.92 ms. The fixed-schema ablation A1 matched 91 and the proposed
+method matched 71. All 180 unauthorized trials were blocked. The results support
+using templates as the default for the three diagnostics studied.
 
 ## Introduction
 
@@ -29,6 +32,10 @@ The study addresses three questions.
    examples and validation are held fixed?
 3. How often do the role policy and SQL validator block unauthorized requests
    before execution, and how often do they block permitted requests?
+
+Taken together, these questions measure the trade-off between automation,
+correctness and execution safety through accuracy, false blocks and API
+latency. The prototype gives the user a summary of the matching diagnostic rows.
 
 ## Related Work
 
@@ -59,16 +66,18 @@ on five products. W1 runs catalog and order lookups; W2 runs grouped reports
 with concurrent sessions. The 48 prepared questions are assigned to these four
 combinations. Expected lock and active-query rows come from independent
 `pg_stat_activity` and `pg_blocking_pids` queries; expected statistics rankings
-come from separately queried raw counter snapshots. Each method uses Ollama
+come from separately queried raw counter snapshots. The model methods use Ollama
 0.40.16 with `qwen2.5-coder:3b` (digest
 `f72c60cabf6237b07f6e632b2c48d533cef25eda2efbd34bed21c5e9c01e6225`)
 and the same API settings. Because the statistics window advances during
-the run, the expected query ranking is recalculated from raw snapshots just
-before and after each request; a ranking that matches either observation is
-accepted. The full live run uses three repetitions.
+the run, the reference is recalculated from raw snapshots just before and after
+each request. The first live run graded the ordered sequence of query identities.
+The updated evaluator requires the ordered identities, call counts, total times
+and mean times to match a single complete reference, with a 0.001 ms tolerance
+for the times. Each run uses three repetitions.
 Accuracy is measured against reference results obtained independently. The
 run also records clarification success, authorization outcomes, end-to-end
-latency and database call time. The planned primary comparison uses per-case
+latency and database call time. The primary comparison uses per-case
 majority outcomes for proposed and B3, an exact McNemar test, and a paired 95%
 bootstrap interval for the percentage-point difference.
 
@@ -87,12 +96,17 @@ were each repeated three times. All 108 permitted observations matched the
 reference result, and all 36 forbidden observations were blocked. The
 controlled A2 list contained four authorized and four unauthorized candidates.
 The validator accepted the four authorized candidates and rejected the other
-four. These results measure the benchmark contract with synthetic snapshots.
-The completed live run contains 720 unique valid measurements: 48 questions,
+four. The offline unfiltered comparison admits all eight candidates by
+definition. The replay compares validation decisions on those labelled
+candidates without executing their SQL.
+
+The original live run contains 720 unique valid measurements: 48 questions,
 five methods, and three repetitions. Each of D1-W1, D1-W2, D2-W1, and D2-W2
 contributed 180 measurements. Each method saw 108 permitted and 36 denied
 requests. All 36 denied requests per method were blocked, with no unauthorized
-rows returned. Permitted-result accuracy and end-to-end latency were:
+rows returned. These 180 trials represent 12 distinct denied cases evaluated
+three times under each of five methods. Permitted-result accuracy and
+end-to-end latency were:
 
 | Method | Correct / permitted | Accuracy | Median latency (ms) | False blocks / permitted |
 | --- | ---: | ---: | ---: | ---: |
@@ -116,13 +130,54 @@ four health views were ready. Wrong model answers and validator rejections
 were preserved as outcomes. The final 720-record file has no infrastructure
 exclusions. [Run summary](../evaluation/live_run_results.md)
 
+### Additional live experiments
+
+The 48-case rerun has 720 valid measurements of 720 with full-field grading.
+
+| Method | Correct / permitted | Median API ms | P95 API ms | Expected permission denial |
+| --- | ---: | ---: | ---: | ---: |
+| B1 | 108 / 108 | 10.46 | 18.45 | 36 / 36 |
+| B2 | 87 / 108 | 1528.68 | 3355.06 | 36 / 36 |
+| B3 | 87 / 108 | 1693.04 | 3471.91 | 36 / 36 |
+| A1 | 90 / 108 | 1576.31 | 2995.04 | 36 / 36 |
+| Proposed | 75 / 108 | 1508.90 | 2933.02 | 36 / 36 |
+
+[Detailed results, role summaries and paired tests](../evaluation/evidence/rerun-summary.md).
+
+The 12-case evaluation of additional wording has 72 valid measurements of 72 with full-field grading.
+
+| Method | Correct / permitted | Median API ms | P95 API ms | Expected permission denial |
+| --- | ---: | ---: | ---: | ---: |
+| B1 | 21 / 30 | 9.57 | 16.62 | 3 / 6 |
+| Proposed | 9 / 30 | 1128.00 | 3338.35 | 3 / 6 |
+
+[Detailed results, role summaries and paired tests](../evaluation/evidence/followup-summary.md).
+
+The two live evaluations report their results separately from the original run. Timing comparisons apply within each run.
+
+[Shareable evidence and report commands](../evaluation/evidence/README.md).
+
 ## Discussion
 
-The lock pilot establishes that the model, validator, API and PostgreSQL
-can execute the same diagnosis end to end. The broader experiment will test
-whether this behavior holds across Turkish phrasing, privileges, query
-duration and aggregate statistics. Controlled demonstrations and live
-measurements will be reported with their corresponding data sources.
+B1 had the highest original live accuracy and lowest API latency. Its result
+reflects a closed catalogue whose templates and benchmark share the same
+diagnostic intents. A1 and Proposed use the same prompt builder and examples.
+Operators receive different schema contexts, while viewers see the same single
+permitted view in both methods. The comparison against B3 also reflects other
+prompt differences. The offline replay supports the validator on eight candidate
+examples, and the authorization trials cover the benchmark's role policy. These
+results are conditional on one local model, synthetic orders, and three read-only
+diagnostics. They leave generalization to broader PostgreSQL administration,
+other phrasing, and production workloads open.
+
+## Reproduction
+
+The original code and summary are pinned at commit `8017e9b`. The original
+measurement files stayed in the experiment environment. Use the
+[evaluation guide](../evaluation/README.md) to generate the datasets and
+workloads, run the API against PostgreSQL, and rebuild the summary from
+shareable records. The revised evaluator and first run use distinct scoring
+rules and retain separate results.
 
 ## References
 
@@ -130,7 +185,7 @@ measurements will be reported with their corresponding data sources.
 PostgreSQL 17 Documentation. <https://www.postgresql.org/docs/17/monitoring-stats.html>
 
 [2] N. Stratica, L. Kosseim, and B. C. Desai, “Using semantic templates for a
-natural language interface to databases,” Data & Knowledge Engineering,
+natural language interface to the CINDI virtual library,” Data & Knowledge Engineering,
 vol. 55, pp. 4–19, 2005. <https://doi.org/10.1016/j.datak.2004.12.002>
 
 [3] D. Gao et al., “Text-to-SQL empowered by large language models: A benchmark
@@ -143,7 +198,7 @@ in Findings of EACL, 2026, pp. 4516–4546.
 <https://doi.org/10.18653/v1/2026.findings-eacl.236>
 
 [5] R. Zhong, T. Yu, and D. Klein, “Semantic evaluation for Text-to-SQL with
-distilled test suites,” in Proc. EMNLP, 2020.
+distilled test suites,” in Proc. EMNLP, 2020, pp. 396–411.
 <https://aclanthology.org/2020.emnlp-main.29/>
 
 ## Demo Akışı
