@@ -65,7 +65,7 @@ def test_cost_metrics_choose_different_rows(monkeypatch, metric, expected_queryi
         headers=bearer("operator"),
     )
     assert response.status_code == 200
-    assert response.json()["rows"][0]["queryid"] == expected_queryid
+    assert response.json()["rows"][0]["queryid"] == str(expected_queryid)
     assert response.json()["source"] == "controlled_fixture"
 
 
@@ -90,7 +90,7 @@ def test_explicit_question_metric_needs_no_followup(
         "/diagnose", json={"question": question}, headers=bearer("operator")
     )
     assert response.status_code == 200
-    assert response.json()["rows"][0]["queryid"] == expected_queryid
+    assert response.json()["rows"][0]["queryid"] == str(expected_queryid)
     assert seen == [expected_metric]
 
 
@@ -315,7 +315,7 @@ def test_viewer_only_exposes_statistics_in_model_messages(monkeypatch):
         headers=bearer("viewer"),
     )
     assert response.status_code == 200
-    assert [row["queryid"] for row in response.json()["rows"]] == [901, 902]
+    assert [row["queryid"] for row in response.json()["rows"]] == ["901", "902"]
     assert "diagnostics.query_stats" in json.dumps(captured)
     assert "diagnostics.lock_waits" not in json.dumps(captured)
     assert "diagnostics.long_queries" not in json.dumps(captured)

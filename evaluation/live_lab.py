@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import sys
@@ -178,14 +179,31 @@ def hold(config):
         stop.set()
 
 
-def references(config):
+def reference_duration(case):
+    if "duration_seconds" in case.get("reference", {}):
+        return case["reference"]["duration_seconds"]
+    match = re.search(r"(\d+)\s+saniye", case["question"])
+    return int(match[1]) if match else 0
+
+
+def reference_ranking(case):
+    parameters = case.get("reference", {})
+    metric = parameters.get("metric") or case.get("follow_up") or (
+        "mean" if any(term in case["question"] for term in ("ortalama", "çağrı başına"))
+        else "total"
+    )
+    count = re.search(r"(\d+)\s+sorgu", case["question"])
+    return metric, parameters.get("limit", int(count[1]) if count else 1)
+
+
+def references(config, source, output):
     """Use raw PostgreSQL activity/counter tables, independently of API views."""
-    source = ROOT / "evaluation" / "controlled_cases.jsonl"
     cases = load_cases(source)
-    by_condition = {}
-    for condition, entry in config["conditions"].items():
+    activity = {}
+    batch_pairs = {}
+    for condition in {f"{case['dataset']}-{case['workload']}" for case in cases}:
+        entry = config["conditions"][condition]
         with psycopg.connect(entry["admin_url"], autocommit=True) as db:
-            dbid = db.execute("SELECT oid FROM pg_database WHERE datname=current_database()").fetchone()[0]
             locks = db.execute("""
                 SELECT a.pid, unnest(pg_blocking_pids(a.pid))
                 FROM pg_stat_activity a WHERE a.datname=current_database()
@@ -197,71 +215,37 @@ def references(config):
                   AND backend_type='client backend' AND pid<>pg_backend_pid()
                   AND query_start IS NOT NULL
             """).fetchall()
-            batches = db.execute("""
-                WITH latest AS (
-                    SELECT batch_id, captured_at, stats_reset, dealloc
-                    FROM diagnostics.query_capture_batches WHERE dbid=%s
-                    ORDER BY captured_at DESC, batch_id DESC LIMIT 1
-                )
-                SELECT * FROM latest
-                UNION ALL
-                SELECT batch_id, captured_at, stats_reset, dealloc
-                FROM diagnostics.query_capture_batches
-                WHERE dbid=%s AND captured_at <=
-                    (SELECT captured_at - interval '15 minutes' FROM latest)
-                ORDER BY captured_at DESC, batch_id DESC LIMIT 2
-            """, (dbid, dbid)).fetchall()
-            if len(batches) != 2 or not (15 <= (batches[0][1]-batches[1][1]).total_seconds()/60 <= 17):
-                raise ValueError(f"{condition}: two captures 15–17 minutes apart are required")
-            if batches[0][2:] != batches[1][2:]:
-                raise ValueError(f"{condition}: pg_stat_statements counters were reset")
-            stats = db.execute("""
-                SELECT cur.queryid,
-                       round(sum(cur.total_exec_time_ms - coalesce(old.total_exec_time_ms,0))::numeric,3)::float8,
-                       round((sum(cur.total_exec_time_ms - coalesce(old.total_exec_time_ms,0)) /
-                             sum(cur.calls - coalesce(old.calls,0)))::numeric,3)::float8,
-                       sum(cur.calls - coalesce(old.calls,0))::bigint
-                FROM diagnostics.query_counter_snapshots cur
-                LEFT JOIN diagnostics.query_counter_snapshots old
-                  ON old.batch_id=%s AND old.userid=cur.userid AND old.dbid=cur.dbid
-                 AND old.queryid=cur.queryid AND old.toplevel=cur.toplevel
-                WHERE cur.batch_id=%s AND cur.calls>coalesce(old.calls,0)
-                  AND cur.total_exec_time_ms>=coalesce(old.total_exec_time_ms,0)
-                GROUP BY cur.queryid
-            """, (batches[1][0], batches[0][0])).fetchall()
-            by_condition[condition] = {"locks": locks, "longs": longs, "stats": [
-                dict(zip(("queryid", "total_exec_time_ms", "mean_exec_time_ms", "calls"), row))
-                for row in stats], "batch_ids": [b[0] for b in batches]}
-    output = OUTPUT / "live_cases.jsonl"
+            activity[condition] = {"locks": locks, "longs": longs}
+    prepared = []
+    for case in cases:
+        condition = f"{case['dataset']}-{case['workload']}"
+        data = activity[condition]
+        expected = dict(case["expected"])
+        if case["kind"] != "denied":
+            if expected["intent"] == "lock_waits":
+                expected["rows"] = [dict(waiting_pid=p, blocking_pid=b) for p,b in data["locks"]]
+                expected["match_fields"] = ["waiting_pid", "blocking_pid"]
+            elif expected["intent"] == "long_queries":
+                threshold = reference_duration(case)
+                expected["rows"] = [dict(pid=p, query_text=q) for p,q,duration in data["longs"]
+                                    if duration > threshold]
+                expected["match_fields"] = ["pid", "query_text"]
+            else:
+                reference = live_stats_reference(config, case)
+                if reference.get("unavailable"):
+                    raise ValueError(f"{condition}: valid captures 15–17 minutes apart are required")
+                expected["rows"] = reference["rows"]
+                expected["match_fields"] = [
+                    "queryid", "calls", "total_exec_time_ms", "mean_exec_time_ms",
+                ]
+                batch_pairs[case["id"]] = [reference["baseline_batch_id"], reference["batch_id"]]
+        prepared.append({**case, "environment": "live", "expected": expected})
+    output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as out:
-        for case in cases:
-            condition = f"{case['dataset']}-{case['workload']}"
-            data = by_condition[condition]
-            item = {**case, "environment": "live"}
-            if case["kind"] != "denied":
-                expected = dict(case["expected"])
-                if expected["intent"] == "lock_waits":
-                    expected["rows"] = [dict(waiting_pid=p, blocking_pid=b) for p,b in data["locks"]]
-                    expected["match_fields"] = ["waiting_pid", "blocking_pid"]
-                elif expected["intent"] == "long_queries":
-                    threshold = 60 if "60 saniye" in case["question"] else 25
-                    expected["rows"] = [dict(pid=p, query_text=q) for p,q,duration in data["longs"]
-                                        if duration > threshold]
-                    expected["match_fields"] = ["pid", "query_text"]
-                else:
-                    metric = case.get("follow_up") or (
-                        "mean" if any(x in case["question"] for x in ("ortalama", "çağrı başına"))
-                        else "total")
-                    column = "total_exec_time_ms" if metric == "total" else "mean_exec_time_ms"
-                    count = 2 if "2 sorgu" in case["question"] else 1
-                    expected["rows"] = sorted(data["stats"], key=lambda x: (-x[column], x["queryid"]))[:count]
-                    # Captures continue during the run, so counter magnitudes move;
-                    # the independently ranked query IDs are the stable outcome.
-                    expected["match_fields"] = ["queryid"]
-                item["expected"] = expected
-            out.write(json.dumps(item, ensure_ascii=False) + "\n")
-    (OUTPUT / "reference_batches.json").write_text(json.dumps(
-        {key: val["batch_ids"] for key,val in by_condition.items()}, indent=2) + "\n", encoding="utf-8")
+        for case in prepared:
+            out.write(json.dumps(case, ensure_ascii=False) + "\n")
+    output.with_suffix(".batches.json").write_text(json.dumps(
+        batch_pairs, indent=2) + "\n", encoding="utf-8")
     print(f"Independent references: {len(cases)} cases -> {output}")
 
 
@@ -291,10 +275,7 @@ def live_stats_reference(config, case):
     """Rank raw snapshot deltas independently at the time of an API request."""
     condition = f"{case['dataset']}-{case['workload']}"
     entry = config["conditions"][condition]
-    metric = case.get("follow_up") or (
-        "mean" if any(term in case["question"] for term in ("ortalama", "çağrı başına"))
-        else "total")
-    count = 2 if "2 sorgu" in case["question"] else 1
+    metric, count = reference_ranking(case)
     with psycopg.connect(entry["admin_url"], autocommit=True) as db:
         pair = db.execute("""
             WITH latest AS (
@@ -315,8 +296,7 @@ def live_stats_reference(config, case):
             FROM latest CROSS JOIN baseline
         """).fetchone()
         if pair is None or not 900 <= pair[2] <= 1020 or not pair[3]:
-            return {"batch_id": pair[0] if pair else None,
-                    "queryids": [], "unavailable": True}
+            return {"batch_id": pair[0] if pair else None, "rows": [], "unavailable": True}
         rows = db.execute("""
             SELECT cur.queryid,
                    round(sum(cur.total_exec_time_ms-coalesce(old.total_exec_time_ms,0))::numeric,3)::float8,
@@ -333,7 +313,12 @@ def live_stats_reference(config, case):
         """, (pair[1], pair[0])).fetchall()
     column = 1 if metric == "total" else 2
     ranked = sorted(rows, key=lambda row: (-row[column], row[0]))[:count]
-    return {"batch_id": pair[0], "queryids": [row[0] for row in ranked]}
+    return {
+        "batch_id": pair[0],
+        "baseline_batch_id": pair[1],
+        "rows": [dict(zip(("queryid", "total_exec_time_ms", "mean_exec_time_ms", "calls"), row))
+                 for row in ranked],
+    }
 
 
 def refresh_activity_cases(config):
@@ -364,7 +349,7 @@ def refresh_activity_cases(config):
                 expected["rows"] = [dict(waiting_pid=p, blocking_pid=b)
                                     for p,b in activity[condition]["locks"]]
             elif case["kind"] != "denied" and expected["intent"] == "long_queries":
-                threshold = 60 if "60 saniye" in case["question"] else 25
+                threshold = reference_duration(case)
                 expected["rows"] = [dict(pid=p, query_text=q)
                                     for p,q,duration in activity[condition]["longs"]
                                     if duration > threshold]
@@ -404,6 +389,8 @@ def main():
     parser.add_argument("--admin-url", default=os.getenv("TEST_POSTGRES_ADMIN_URL"))
     parser.add_argument("--repetitions", type=int, default=100)
     parser.add_argument("--interval-seconds", type=int, default=60)
+    parser.add_argument("--cases", type=Path, default=ROOT / "evaluation" / "controlled_cases.jsonl")
+    parser.add_argument("--references-output", type=Path, default=OUTPUT / "live_cases.jsonl")
     args = parser.parse_args()
     if args.action == "setup":
         if not args.admin_url:
@@ -426,7 +413,7 @@ def main():
     elif args.action == "hold":
         hold(config)
     elif args.action == "references":
-        references(config)
+        references(config, args.cases, args.references_output)
     elif args.action == "refresh-activity":
         refresh_activity_cases(config)
     elif args.action == "smoke-case":

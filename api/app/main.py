@@ -129,9 +129,12 @@ def diagnose(
         source = "controlled_fixture"
     if threshold is not None:
         rows = [row for row in rows if row["duration_seconds"] > threshold]
-    if schema.intent == "query_stats" and metric:
-        column = "total_exec_time_ms" if metric == "total" else "mean_exec_time_ms"
-        rows = sorted(rows, key=lambda row: (-row[column], row["queryid"]))[:count]
+    if schema.intent == "query_stats":
+        if metric:
+            column = "total_exec_time_ms" if metric == "total" else "mean_exec_time_ms"
+            rows = sorted(rows, key=lambda row: (-row[column], row["queryid"]))[:count]
+        # PostgreSQL bigint identifiers can exceed JavaScript's safe integer range.
+        rows = [{**row, "queryid": str(row["queryid"])} for row in rows]
 
     return DiagnoseResponse(
         intent=schema.intent, rows=rows, source=source, threshold_seconds=threshold,

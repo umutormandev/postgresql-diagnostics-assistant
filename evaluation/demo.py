@@ -19,7 +19,7 @@ def main() -> None:
     secret = secrets.token_hex(32)
     os.environ["DIAGNOSTICS_AUTH_SECRET"] = secret
     app.state.controlled_fixture = snapshots[args.condition]
-    print(f"Sentetik demo {args.condition} · arayüzden B1 yöntemini seç.", flush=True)
+    print(f"Sentetik demo {args.condition} · varsayılan arayüz yöntemi B1.", flush=True)
     for role in ROLES:
         print(f"{role}: {signed_test_token(role, secret, minutes=60)}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=args.port)

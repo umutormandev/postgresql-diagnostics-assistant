@@ -221,7 +221,9 @@ connected database. `diagnostics.long_queries` reports active client sessions
 in that database, excluding the requesting session; API threshold filtering is
 strict (`duration_seconds > threshold`). `diagnostics.query_stats` derives calls,
 total milliseconds, and mean milliseconds from cumulative counter differences
-over the latest valid 15-minute capture pair. It exposes no query text. PostgreSQL
+over the latest valid 15-minute capture pair. It exposes no query text. The
+`queryid` field is a decimal string so JavaScript preserves the 64-bit identifier.
+PostgreSQL
 counter reset/deallocation or declining counters yield `insufficient_data`.
 The API sets every query transaction to read only with a local 3-second timeout.
 SQLGlot accepts only the single approved view projection and executes fixed SQL.

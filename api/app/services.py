@@ -175,6 +175,8 @@ def fetch_live_diagnostic(sql: str, intent: str, role: str) -> list[dict] | None
             database_url, autocommit=True, connect_timeout=5, row_factory=dict_row
         ) as connection:
             connection.read_only = True
+            if intent == "query_stats":
+                connection.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
             with connection.transaction():
                 connection.execute(
                     "SELECT set_config('statement_timeout', %s, true)", ("3000ms",)

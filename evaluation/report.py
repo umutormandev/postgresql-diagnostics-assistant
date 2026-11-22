@@ -1,4 +1,4 @@
-"""Summarize benchmark records and compare Proposed with B3 by paired case."""
+"""Summarize benchmark records and compare methods by paired case."""
 
 import argparse
 from collections import Counter, defaultdict
@@ -25,6 +25,7 @@ def describe(records: list[dict]) -> dict:
     ambiguous = [record for record in allowed if record["kind"] == "ambiguous"]
     clarified = [record for record in ambiguous if record["clarification_correct"]]
     api_times = milliseconds(eligible, "api_ms")
+    successful_times = milliseconds([record for record in allowed if record["correct"]], "api_ms")
     db_times = milliseconds(eligible, "db_ms")
     return {
         "records": len(records), "infrastructure_errors": len(records) - len(eligible),
@@ -32,7 +33,8 @@ def describe(records: list[dict]) -> dict:
         "accuracy_pct": rate([record["correct"] for record in allowed]),
         "clarification_pct": rate([record["clarification_correct"] for record in ambiguous]),
         "follow_up_pct": rate([record["correct"] for record in clarified]),
-        "denied_n": len(denied), "block_pct": rate([record["denied"] for record in denied]),
+        "denied_n": len(denied),
+        "block_pct": rate([record["denied"] and not record["unauthorized_data"] for record in denied]),
         "false_block_pct": rate([record["denial_stage"] == "policy" or
                                  record["denial_stage"] == "validator" or record["denied"]
                                  for record in allowed]),
@@ -41,14 +43,16 @@ def describe(records: list[dict]) -> dict:
         "unauthorized_data": sum(record["unauthorized_data"] for record in denied),
         "api_median_ms": median(api_times) if api_times else None,
         "api_p95_ms": api_times[ceil(.95 * len(api_times)) - 1] if api_times else None,
+        "successful_api_median_ms": median(successful_times) if successful_times else None,
         "db_median_ms": median(db_times) if db_times else None,
     }
 
 
-def paired_comparison(records: list[dict], repetitions: int, seed: int) -> dict | None:
+def paired_comparison(records: list[dict], repetitions: int, seed: int,
+                      baseline: str = "b3") -> dict | None:
     by_method = defaultdict(dict)
     for record in records:
-        if record["kind"] == "denied" or record["method"] not in ("proposed", "b3"):
+        if record["kind"] == "denied" or record["method"] not in ("proposed", baseline):
             continue
         observations = by_method[(record["case_id"], record["method"])]
         if record["repetition"] in observations:
@@ -64,9 +68,9 @@ def paired_comparison(records: list[dict], repetitions: int, seed: int) -> dict 
     differences = []
     for case_id in sorted({key[0] for key in by_method}):
         proposed = majority(by_method.get((case_id, "proposed"), {}))
-        b3 = majority(by_method.get((case_id, "b3"), {}))
-        if proposed is not None and b3 is not None:
-            differences.append(int(proposed) - int(b3))
+        reference = majority(by_method.get((case_id, baseline), {}))
+        if proposed is not None and reference is not None:
+            differences.append(int(proposed) - int(reference))
     if not differences:
         return None
     counts = Counter(differences)
@@ -78,7 +82,8 @@ def paired_comparison(records: list[dict], repetitions: int, seed: int) -> dict 
     rng = random.Random(seed)
     samples = sorted(mean(rng.choices(differences, k=len(differences))) * 100 for _ in range(10_000))
     return {
-        "paired_cases": len(differences), "proposed_only_correct": wins, "b3_only_correct": losses,
+        "paired_cases": len(differences), "proposed_only_correct": wins,
+        f"{baseline}_only_correct": losses,
         "accuracy_difference_pp": mean(differences) * 100, "mcnemar_exact_p": p_value,
         "bootstrap_95_pp": [samples[249], samples[9749]],
     }
@@ -105,11 +110,15 @@ def main() -> None:
     metadata = json.loads(args.records.with_suffix(".meta.json").read_text(encoding="utf-8"))
     methods = sorted({record["method"] for record in records})
     conditions = sorted({record["condition"] for record in records})
+    slices = [("all", records)]
+    slices.extend((condition, [r for r in records if r["condition"] == condition])
+                  for condition in conditions)
+    slices.extend((f"role-{role}", [r for r in records if r.get("role") == role])
+                  for role in sorted({r["role"] for r in records if "role" in r}))
     table = []
-    for condition in ("all", *conditions):
+    for condition, subset in slices:
         for method in methods:
-            selected = [record for record in records if record["method"] == method
-                        and (condition == "all" or record["condition"] == condition)]
+            selected = [record for record in subset if record["method"] == method]
             if selected:
                 table.append({"condition": condition, "method": method, **describe(selected)})
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -124,13 +133,15 @@ def main() -> None:
         "clarification_pct": "Netleştirme (%)", "follow_up_pct": "Takip (%)",
         "block_pct": "Engelleme (%)", "false_block_pct": "Yanlış engel (%)",
         "unauthorized_data": "Yetkisiz veri", "api_median_ms": "Medyan (ms)",
-        "api_p95_ms": "P95 (ms)", "db_median_ms": "DB (ms)",
+        "api_p95_ms": "P95 (ms)", "successful_api_median_ms": "Başarılı medyan (ms)",
+        "db_median_ms": "DB (ms)",
     }
     lines = [
         "# PostgreSQL Teşhis Deneyi",
         "",
         f"Ortam: {'Sentetik API doğrulaması' if environment == 'fixture' else 'Canlı API'}",
         f"Tekrar: {metadata['repetitions']} · Tohum: {metadata['seed']}",
+        f"Puanlama: {metadata.get('scoring', 'önceki sürüm')}",
         "",
         "| " + " | ".join(columns.values()) + " |",
         "| " + " | ".join("---" for _ in columns) + " |",
@@ -140,21 +151,36 @@ def main() -> None:
             lines.append("| " + " | ".join(cell(row[key]) for key in columns) + " |")
     skipped = sum(row["infrastructure_errors"] for row in table if row["condition"] == "all")
     lines.extend(["", f"Altyapı hatası nedeniyle ölçüme alınmayan vaka çalıştırması: {skipped}."])
-    comparison = paired_comparison(records, metadata["repetitions"], metadata["seed"])
+    baseline = "b1" if set(methods) == {"b1", "proposed"} else "b3"
+    comparison = paired_comparison(records, metadata["repetitions"], metadata["seed"], baseline=baseline)
     if comparison:
         low, high = comparison["bootstrap_95_pp"]
         lines.extend([
-            "", "## Önerilen Yöntem ve B3",
+            "", f"## Önerilen Yöntem ve {baseline.upper()}",
             "",
             f"{comparison['paired_cases']} eşleşmiş izinli vaka. Doğruluk farkı "
             f"{comparison['accuracy_difference_pp']:.2f} yüzde puan "
             f"(%95 eşleştirilmiş bootstrap aralığı {low:.2f} ile {high:.2f}). "
             f"Exact McNemar p = {comparison['mcnemar_exact_p']:.6g}. "
             f"Yalnız önerilen yöntem doğru: {comparison['proposed_only_correct']}. "
-            f"Yalnız B3 doğru: {comparison['b3_only_correct']}.",
+            f"Yalnız {baseline.upper()} doğru: {comparison[f'{baseline}_only_correct']}.",
         ])
-    else:
+    elif {"b3", "proposed"} <= set(methods):
         lines.extend(["", "Eşleştirilmiş karşılaştırma için tamamlanmış önerilen yöntem ve B3 vakaları gerekiyor."])
+    if {"a1", "proposed"} <= set(methods):
+        lines.extend(["", "## Şema seçimi (A1) · rol bazında keşifsel karşılaştırma", ""])
+        for role in ("operator", "viewer"):
+            subset = [r for r in records if r.get("role") == role]
+            pair = paired_comparison(subset, metadata["repetitions"], metadata["seed"], baseline="a1")
+            if pair:
+                low, high = pair["bootstrap_95_pp"]
+                lines.append(
+                    f"- {role}: {pair['paired_cases']} eşleşmiş izinli vaka, önerilen yöntem − A1 "
+                    f"{pair['accuracy_difference_pp']:+.2f} yüzde puan "
+                    f"(%95 eşleştirilmiş bootstrap aralığı {low:.2f} ile {high:.2f}). "
+                    f"Exact McNemar p = {pair['mcnemar_exact_p']:.6g}."
+                )
+        lines.append("İzleyici için iki yöntem de aynı izinli istatistik görünümünü alır.")
     (args.output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(args.output_dir / "summary.md")
 
